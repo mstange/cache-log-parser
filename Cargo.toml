@@ -1,0 +1,26 @@
+[package]
+authors = ["Markus Stange <mstange@themasta.com>"]
+name = "cache-log-parser"
+version = "0.1.0"
+
+[dependencies]
+addr2line = "0.3.0"
+hyper = "0.10.5"
+lazy_static = "0.2.6"
+nom = "3.0.0"
+quick-error = "1.1.0"
+rayon = "0.6.0"
+regex = "0.2.1"
+serde = "1.0.9"
+serde_derive = "1.0.9"
+serde_json = "1.0"
+
+[dependencies.flate2]
+default-features = false
+features = ["zlib"]
+version = "0.2"
+
+[profile]
+
+[profile.release]
+debug = true
