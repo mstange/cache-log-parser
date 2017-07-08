@@ -5,6 +5,7 @@ version = "0.1.0"
 
 [dependencies]
 addr2line = "0.3.0"
+clap = "2.25.0"
 hyper = "0.10.5"
 lazy_static = "0.2.6"
 nom = "3.0.0"

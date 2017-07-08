@@ -33,7 +33,7 @@ impl SharedLibraries {
                .binary_search_by(|ref lib| {
             // Return a statement about lib. (Is lib less / equal / greater than addr?)
             if lib.start <= addr {
-                if addr < lib.end {
+                if lib.end > addr {
                     Ordering::Equal
                 } else {
                     Ordering::Less
