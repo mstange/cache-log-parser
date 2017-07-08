@@ -10,17 +10,18 @@ extern crate serde;
 extern crate serde_json;
 #[macro_use]
 extern crate serde_derive;
-
+extern crate addr2line;
 
 pub mod cache_log_parsing;
 pub mod shared_libraries;
+pub mod addr2line_cmd;
 
 #[test]
 fn it_works() {
     use std::io::BufReader;
     use std::fs::File;
     use cache_log_parsing::{SymbolTable};
-    let reader = BufReader::new(File::open("/Users/mstange/Desktop/cachelogging-20170705-cachesize2M.txt")
+    let reader = BufReader::new(File::open("/home/mstange/allofthelogging.txt")
                                     .unwrap());
 
     println!("{:?}", SymbolTable::from_breakpad_symbol_dump(reader))

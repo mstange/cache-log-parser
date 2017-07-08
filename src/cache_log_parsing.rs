@@ -6,10 +6,12 @@ use nom::{hex_digit, digit, rest_s, IResult};
 use std::str::FromStr;
 use std::collections::HashMap;
 use std::fmt::Display;
+use addr2line;
 
 use shared_libraries::SharedLibraries;
+use addr2line_cmd::{get_addr2line_stack, StackFrameInfo};
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum LineContent<'a> {
     LLCacheInfo {
         size: u32,
@@ -233,35 +235,49 @@ named!(parse_line_of_pid<&str, (i32, LineContent)>, do_parse!(
 
 #[test]
 fn test_parse_line() {
-    assert_eq!(parse_line("LLCacheSwap: new_start=1ffefffe00 old_start=0 size=64"),
-               IResult::Done("",
-                             LineContent::LLCacheLineSwap {
-                                 new_start: 0x1ffefffe00,
-                                 old_start: 0x0,
-                                 size: 64,
-                             }));
-    assert_eq!(parse_line("LLMiss: why=I1_NoX size=3 addr=000000000596e8fe tid=1"),
-               IResult::Done("",
-                             LineContent::LLMiss {
-                                 why: "I1_NoX",
-                                 size: 3,
-                                 addr: 0x596e8fe,
-                                 tid: 1,
-                             }));
+    assert_eq!(
+        parse_line("LLCacheSwap: new_start=1ffefffe00 old_start=0 size=64"),
+        IResult::Done(
+            "",
+            LineContent::LLCacheLineSwap {
+                new_start: 0x1ffefffe00,
+                old_start: 0x0,
+                size: 64,
+            },
+        )
+    );
+    assert_eq!(
+        parse_line("LLMiss: why=I1_NoX size=3 addr=000000000596e8fe tid=1"),
+        IResult::Done(
+            "",
+            LineContent::LLMiss {
+                why: "I1_NoX",
+                size: 3,
+                addr: 0x596e8fe,
+                tid: 1,
+            },
+        )
+    );
 
-    assert_eq!(parse_line_of_pid("==16935== LLCacheSwap: new_start=1ffeffe400 old_start=0 size=64"),
-               IResult::Done("",
-                             (16935,
-                              LineContent::LLCacheLineSwap {
-                                  new_start: 0x1ffeffe400,
-                                  old_start: 0x0,
-                                  size: 64,
-                              })));
+    assert_eq!(
+        parse_line_of_pid(
+            "==16935== LLCacheSwap: new_start=1ffeffe400 old_start=0 size=64",
+        ),
+        IResult::Done("", (
+            16935,
+            LineContent::LLCacheLineSwap {
+                new_start: 0x1ffeffe400,
+                old_start: 0x0,
+                size: 64,
+            },
+        ))
+    );
 }
 
 fn bisection<S, T, F>(v: &Vec<S>, f: F, x: T) -> usize
-    where F: Fn(&S) -> T,
-          T: PartialOrd
+where
+    F: Fn(&S) -> T,
+    T: PartialOrd,
 {
     let mut low = 0;
     let mut high = v.len();
@@ -322,7 +338,8 @@ impl Ranges {
             first_removal_index = first_removal_index - 1;
         }
         if after_last_removal_index != 0 && after_last_removal_index < self.r.len() &&
-           self.r[after_last_removal_index - 1].0 == end {
+            self.r[after_last_removal_index - 1].0 == end
+        {
             end = self.r[after_last_removal_index - 1].1;
             after_last_removal_index = after_last_removal_index + 1;
         }
@@ -341,16 +358,20 @@ impl Ranges {
         if !self.r.is_empty() {
             let (first_start, first_end) = self.r[0];
             if !(first_start < first_end) {
-                panic!("first range is empty or upside down, {}, {}",
-                       first_start,
-                       first_end);
+                panic!(
+                    "first range is empty or upside down, {}, {}",
+                    first_start,
+                    first_end
+                );
             }
             let mut prev_end = first_end;
             for &(start, end) in self.r.iter().skip(1) {
                 if !(prev_end < start) {
-                    panic!("start is not strictly larger than prev_end! {}, {}",
-                           prev_end,
-                           start);
+                    panic!(
+                        "start is not strictly larger than prev_end! {}, {}",
+                        prev_end,
+                        start
+                    );
                 }
                 if !(start < end) {
                     panic!("end is not strictly larger than start! {}, {}", start, end);
@@ -365,60 +386,64 @@ impl Ranges {
         }
     }
 
-    //   remove(start, size) {
-    //     // console.log(this._startAddresses.slice(), this._endAddresses.slice());
-    //     let end = start + size;
-    //     // console.log('removing', start, end);
-    //     const insertion_index_start_start = bisection(this._startAddresses, start);
-    //     const insertion_index_start_end = bisection(this._endAddresses, start);
-    //     const insertion_index_end_start = bisection(this._startAddresses, end);
-    //     const insertion_index_end_end = bisection(this._endAddresses, end);
-    //     let first_removal_index = insertion_index_start_end;
-    //     let after_last_removal_index = insertion_index_end_start;
-    //     let newFirstRangeStart = null;
-    //     let newSecondRangeEnd = null;
-    //     if (insertion_index_start_start !== insertion_index_start_end) {
-    //       // assert(insertion_index_start_start > insertion_index_start_end)
-    //       // start falls into the range at insertion_index_start_end
-    //       newFirstRangeStart = this._startAddresses[insertion_index_start_end];
-    //       if (newFirstRangeStart === start) {
-    //         newFirstRangeStart = null;
-    //       }
-    //     } else {
-    //       // start is before the range at insertion_index_start_start
-    //     }
-    //     if (insertion_index_end_start !== insertion_index_end_end) {
-    //       // assert(insertion_index_end_start > insertion_index_end_end)
-    //       // end falls into the range at insertion_index_end_end
-    //       newSecondRangeEnd = this._endAddresses[insertion_index_end_end];
-    //       if (newSecondRangeEnd === end) {
-    //         newSecondRangeEnd = null;
-    //       }
-    //     } else {
-    //       // end is before the range at insertion_index_end_start
-    //     }
-    //     if (newFirstRangeStart !== null) {
-    //       if (newSecondRangeEnd !== null) {
-    //         this._startAddresses.splice(first_removal_index, after_last_removal_index - first_removal_index, newFirstRangeStart, end);
-    //         this._endAddresses.splice(first_removal_index, after_last_removal_index - first_removal_index, start, newSecondRangeEnd);
-    //       } else {
-    //         this._startAddresses.splice(first_removal_index, after_last_removal_index - first_removal_index, newFirstRangeStart);
-    //         this._endAddresses.splice(first_removal_index, after_last_removal_index - first_removal_index, start);
-    //       }
-    //     } else {
-    //        if (newSecondRangeEnd !== null) {
-    //         this._startAddresses.splice(first_removal_index, after_last_removal_index - first_removal_index, end);
-    //         this._endAddresses.splice(first_removal_index, after_last_removal_index - first_removal_index, newSecondRangeEnd);
-    //        } else {
-    //         this._startAddresses.splice(first_removal_index, after_last_removal_index - first_removal_index);
-    //         this._endAddresses.splice(first_removal_index, after_last_removal_index - first_removal_index);
-    //        }
-    //     }
-    //     assertIsSorted(this._startAddresses);
-    //     assertIsSorted(this._endAddresses);
-    //     this._length = this._startAddresses.length;
-    //     this.assert_consistency();
-    //   }
+    pub fn remove(&mut self, start: u64, size: u64) {
+        // console.log(this._startAddresses.slice(), this._endAddresses.slice());
+        let end = start + size;
+        // console.log('removing', start, end);
+        let insertion_index_start_start = bisection(&self.r, |&(s, _)| s, start);
+        let insertion_index_start_end = bisection(&self.r, |&(_, e)| e, start);
+        let insertion_index_end_start = bisection(&self.r, |&(s, _)| s, end);
+        let insertion_index_end_end = bisection(&self.r, |&(_, e)| e, end);
+        let first_removal_index = insertion_index_start_end;
+        let after_last_removal_index = insertion_index_end_start;
+        let mut new_first_range_start = None;
+        let mut new_second_range_end = None;
+        if insertion_index_start_start != insertion_index_start_end {
+            // assert(insertion_index_start_start > insertion_index_start_end)
+            // start falls into the range at insertion_index_start_end
+            let new_first_range_start_candidate = self.r[insertion_index_start_end].0;
+            if new_first_range_start_candidate != start {
+                new_first_range_start = Some(new_first_range_start_candidate);
+            }
+        } else {
+            // start is before the range at insertion_index_start_start
+        }
+        if insertion_index_end_start != insertion_index_end_end {
+            // assert(insertion_index_end_start > insertion_index_end_end)
+            // end falls into the range at insertion_index_end_end
+            let new_second_range_end_candidate = self.r[insertion_index_end_end].1;
+            if new_second_range_end_candidate != end {
+                new_second_range_end = Some(new_second_range_end_candidate);
+            }
+        } else {
+            // end is before the range at insertion_index_end_start
+        }
+        for i in (first_removal_index..after_last_removal_index).rev() {
+            self.r.remove(i);
+        }
+        if let Some(new_second_range_end) = new_second_range_end {
+            self.r.insert(
+                first_removal_index,
+                (end, new_second_range_end),
+            );
+        }
+        if let Some(new_first_range_start) = new_first_range_start {
+            self.r.insert(
+                first_removal_index,
+                (new_first_range_start, start),
+            );
+        }
+        self.assert_consistency();
+    }
+
+    pub fn contains(&self, value: u64) -> bool {
+        let range_index = bisection(&self.r, |&(_, e)| e, value);
+        if range_index >= self.r.len() {
+            return false;
+        }
+        let range_start = self.r[range_index].0;
+        range_start <= value
+    }
 }
 
 pub struct CPUCache {
@@ -503,11 +528,13 @@ impl CPUCache {
         let old_set_no = old_tag & self.sets_min_1;
         let new_set_no = new_tag & self.sets_min_1;
         if old_tag != 0 && old_set_no != new_set_no {
-            panic!("Expected to only exchange cache lines inside the same set! old_addr={:x} new_addr={:x} old_set_no={} new_set_no={}",
-                   old_addr,
-                   new_addr,
-                   old_set_no,
-                   new_set_no);
+            panic!(
+                "Expected to only exchange cache lines inside the same set! old_addr={:x} new_addr={:x} old_set_no={} new_set_no={}",
+                old_addr,
+                new_addr,
+                old_set_no,
+                new_set_no
+            );
         }
         let set_no = new_set_no;
         let tag_index_start = (set_no * self.assoc) as usize;
@@ -536,7 +563,8 @@ impl CPUCache {
 
 #[allow(dead_code)]
 fn print_display_list_info<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io::Error>
-    where T: io::BufRead
+where
+    T: io::BufRead,
 {
     let mut bytes_read = 0;
     let mut ranges_read = Ranges::new();
@@ -550,16 +578,20 @@ fn print_display_list_info<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(),
                     in_display_list = true;
                 }
                 LineContent::EndDisplayList => {
-                    println!("DisplayList for {} lines from {} to {}",
-                             (line_index - dl_begin),
-                             dl_begin,
-                             line_index);
+                    println!(
+                        "DisplayList for {} lines from {} to {}",
+                        (line_index - dl_begin),
+                        dl_begin,
+                        line_index
+                    );
                     let ranges_read_size = ranges_read.cumulative_size();
                     let overhead = bytes_read as f64 / ranges_read_size as f64;
-                    println!("bytes_read: {}, cumulative size of ranges_read: {}, overhead: {}",
-                             bytes_read,
-                             ranges_read_size,
-                             overhead);
+                    println!(
+                        "bytes_read: {}, cumulative size of ranges_read: {}, overhead: {}",
+                        bytes_read,
+                        ranges_read_size,
+                        overhead
+                    );
                     in_display_list = false;
                     bytes_read = 0;
                     ranges_read = Ranges::new();
@@ -567,10 +599,11 @@ fn print_display_list_info<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(),
                 line_contents => {
                     if in_display_list {
                         if let LineContent::LLCacheLineSwap {
-                                   new_start,
-                                   old_start: _,
-                                   size,
-                               } = line_contents {
+                            new_start,
+                            old_start: _,
+                            size,
+                        } = line_contents
+                        {
                             bytes_read = bytes_read + size;
                             ranges_read.add(new_start, size);
                         }
@@ -584,15 +617,17 @@ fn print_display_list_info<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(),
 
 #[allow(dead_code)]
 fn print_extra_field_info<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io::Error>
-    where T: io::BufRead
+where
+    T: io::BufRead,
 {
     for (_, line) in iter {
         if let IResult::Done(_, (_, line_contents)) = parse_line_of_pid(&line?) {
             if let LineContent::ExtraField {
-                       ident,
-                       field_name,
-                       field_content,
-                   } = line_contents {
+                ident,
+                field_name,
+                field_content,
+            } = line_contents
+            {
                 println!("{} {} {}", ident, field_name, field_content);
             }
         };
@@ -602,7 +637,8 @@ fn print_extra_field_info<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), 
 
 #[allow(dead_code)]
 fn print_other_lines<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io::Error>
-    where T: io::BufRead
+where
+    T: io::BufRead,
 {
     for (line_index, line) in iter {
         if let IResult::Done(_, (_, line_contents)) = parse_line_of_pid(&line?) {
@@ -616,15 +652,17 @@ fn print_other_lines<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io::E
 
 #[allow(dead_code)]
 fn print_fork_lines<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io::Error>
-    where T: io::BufRead
+where
+    T: io::BufRead,
 {
     let mut last_frame_index = -1;
     for (line_index, line) in iter {
         if let IResult::Done(_, (_, line_contents)) = parse_line_of_pid(&line?) {
             if let LineContent::AddFrame {
-                       index: frame_index,
-                       address: _,
-                   } = line_contents {
+                index: frame_index,
+                address: _,
+            } = line_contents
+            {
                 if frame_index as i32 <= last_frame_index {
                     println!("something forked at or before line {}", line_index)
                 }
@@ -636,10 +674,12 @@ fn print_fork_lines<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io::Er
 }
 
 #[allow(dead_code)]
-fn print_cache_contents_at<T>(mut iter: iter::Enumerate<io::Lines<T>>,
-                              at_line_index: usize)
-                              -> Result<(), io::Error>
-    where T: io::BufRead
+fn print_cache_contents_at<T>(
+    mut iter: iter::Enumerate<io::Lines<T>>,
+    at_line_index: usize,
+) -> Result<(), io::Error>
+where
+    T: io::BufRead,
 {
     let mut cache = loop {
         if let Some((_, line)) = iter.next() {
@@ -649,7 +689,8 @@ fn print_cache_contents_at<T>(mut iter: iter::Enumerate<io::Lines<T>>,
                                       size,
                                       line_size,
                                       assoc,
-                                  })) = parse_line_of_pid(&line?) {
+                                  })) = parse_line_of_pid(&line?)
+            {
                 break CPUCache::new(size, line_size, assoc);
             }
         } else {
@@ -663,10 +704,11 @@ fn print_cache_contents_at<T>(mut iter: iter::Enumerate<io::Lines<T>>,
         }
         if let IResult::Done(_, (_, line_contents)) = parse_line_of_pid(&line?) {
             if let LineContent::LLCacheLineSwap {
-                       new_start,
-                       old_start,
-                       size: _,
-                   } = line_contents {
+                new_start,
+                old_start,
+                size: _,
+            } = line_contents
+            {
                 cache.exchange(new_start, old_start);
             }
         };
@@ -676,21 +718,24 @@ fn print_cache_contents_at<T>(mut iter: iter::Enumerate<io::Lines<T>>,
 }
 
 #[allow(dead_code)]
-fn print_cache_read_overhead<T>(iter: iter::Enumerate<io::Lines<T>>,
-                                from_line: usize,
-                                to_line: usize)
-                                -> Result<(), io::Error>
-    where T: io::BufRead
+fn print_cache_read_overhead<T>(
+    iter: iter::Enumerate<io::Lines<T>>,
+    from_line: usize,
+    to_line: usize,
+) -> Result<(), io::Error>
+where
+    T: io::BufRead,
 {
     let mut bytes_read = 0;
     let mut ranges_read = Ranges::new();
     for (_, line) in iter.take(to_line).skip(from_line) {
         if let IResult::Done(_, (_, line_contents)) = parse_line_of_pid(&line?) {
             if let LineContent::LLCacheLineSwap {
-                       new_start,
-                       old_start: _,
-                       size,
-                   } = line_contents {
+                new_start,
+                old_start: _,
+                size,
+            } = line_contents
+            {
                 bytes_read = bytes_read + size;
                 ranges_read.add(new_start, size);
             }
@@ -698,10 +743,12 @@ fn print_cache_read_overhead<T>(iter: iter::Enumerate<io::Lines<T>>,
     }
     let ranges_read_size = ranges_read.cumulative_size();
     let overhead = bytes_read as f64 / ranges_read_size as f64;
-    println!("bytes_read: {}, cumulative size of ranges_read: {}, overhead: {}",
-             bytes_read,
-             ranges_read_size,
-             overhead);
+    println!(
+        "bytes_read: {}, cumulative size of ranges_read: {}, overhead: {}",
+        bytes_read,
+        ranges_read_size,
+        overhead
+    );
     Ok(())
 }
 
@@ -715,7 +762,8 @@ fn n_times(n: usize, singular: &str, plural: &str) -> String {
 
 #[allow(dead_code)]
 fn english_concat<T>(singular: &str, plural: &str, v: &Vec<T>) -> String
-    where T: Display
+where
+    T: Display,
 {
     let n = v.len();
     if n == 0 {
@@ -729,11 +777,13 @@ fn english_concat<T>(singular: &str, plural: &str, v: &Vec<T>) -> String
 }
 
 #[allow(dead_code)]
-fn print_multiple_read_ranges<T>(iter: iter::Enumerate<io::Lines<T>>,
-                                 from_line: usize,
-                                 to_line: usize)
-                                 -> Result<(), io::Error>
-    where T: io::BufRead
+fn print_multiple_read_ranges<T>(
+    iter: iter::Enumerate<io::Lines<T>>,
+    from_line: usize,
+    to_line: usize,
+) -> Result<(), io::Error>
+where
+    T: io::BufRead,
 {
     let mut stack_table = StackTable::new();
     let mut read_addresses = HashMap::new();
@@ -769,7 +819,8 @@ fn print_multiple_read_ranges<T>(iter: iter::Enumerate<io::Lines<T>>,
                     }
                     LineContent::StackForLLMiss(stack_index) => {
                         if let Some((cache_miss_addr, cache_miss_line_index)) =
-                            pending_cache_line_swap {
+                            pending_cache_line_swap
+                        {
                             read_addresses
                                 .entry(cache_miss_addr)
                                 .or_insert(Vec::new())
@@ -789,7 +840,6 @@ fn print_multiple_read_ranges<T>(iter: iter::Enumerate<io::Lines<T>>,
         .collect();
     multiple_reads.sort_by_key(|&(_, v)| -(v.len() as isize));
 
-    println!("Shared libraries: {}", shared_libs_json_string);
     match SharedLibraries::from_json_string(shared_libs_json_string) {
         Ok(shared_libraries) => {
             stack_table.set_libs(shared_libraries);
@@ -799,12 +849,16 @@ fn print_multiple_read_ranges<T>(iter: iter::Enumerate<io::Lines<T>>,
         }
     }
 
-    println!("Read {} cache-line sized memory ranges at least twice.",
-             multiple_reads.len());
+    println!(
+        "Read {} cache-line sized memory ranges at least twice.",
+        multiple_reads.len()
+    );
     for &(addr, reads) in multiple_reads.iter().take(25) {
-        println!("Read cache line at address 0x{:x} {}:",
-                 addr,
-                 n_times(reads.len(), "time", "times"));
+        println!(
+            "Read cache line at address 0x{:x} {}:",
+            addr,
+            n_times(reads.len(), "time", "times")
+        );
         for (i, &(line_index, stack_index)) in reads.iter().enumerate() {
             println!(" ({}) At line {}:", i + 1, line_index);
             stack_table.print_stack(stack_index);
@@ -820,9 +874,10 @@ struct StackEntry {
 }
 
 pub struct StackTable {
-    frames: Vec<u64>,
+    frames: Vec<(u64, Option<Vec<StackFrameInfo>>)>,
     stacks: Vec<StackEntry>,
-    libs: Option<SharedLibraries>
+    libs: Option<SharedLibraries>,
+    addr2line_mappings: HashMap<u64, addr2line::Mapping>,
 }
 
 impl StackTable {
@@ -831,25 +886,29 @@ impl StackTable {
             frames: Vec::new(),
             stacks: Vec::new(),
             libs: None,
+            addr2line_mappings: HashMap::new(),
         }
     }
 
     pub fn add_frame(&mut self, index: usize, address: u64) {
         assert!(index == self.frames.len(), "unexpected frame index");
-        self.frames.push(address);
+        self.frames.push((address, None));
     }
 
     pub fn add_stack(&mut self, index: usize, parent_stack: usize, frame: usize) {
         assert!(index == self.stacks.len(), "unexpected stack index");
-        assert!(parent_stack < index || parent_stack == 0,
-                "can't refer to parent stacks that I haven't seen yet");
-        assert!(frame < self.frames.len(),
-                "can't refer to frames that I haven't seen yet");
-        self.stacks
-            .push(StackEntry {
-                      parent_stack,
-                      frame,
-                  });
+        assert!(
+            parent_stack < index || parent_stack == 0,
+            "can't refer to parent stacks that I haven't seen yet"
+        );
+        assert!(
+            frame < self.frames.len(),
+            "can't refer to frames that I haven't seen yet"
+        );
+        self.stacks.push(StackEntry {
+            parent_stack,
+            frame,
+        });
     }
 
     fn frame_index_list_for_stack(&self, stack: usize) -> Vec<usize> {
@@ -863,17 +922,64 @@ impl StackTable {
             result.push(frame);
             stack_index = parent_stack;
         }
-        result.reverse();
         result
     }
 
-    pub fn print_stack(&self, stack: usize) {
+    pub fn print_stack(&mut self, stack: usize) {
         for frame in self.frame_index_list_for_stack(stack) {
-            let address = self.frames[frame];
+            let &mut (address, ref mut stack_frame_info) = &mut self.frames[frame];
             if let &Some(ref libs) = &self.libs {
                 if let Some(lib) = libs.lib_for_address(address) {
                     let relative_address = address - lib.start;
-                    println!("  0x{:016x} [{} + 0x{:x}]", address, lib.name, relative_address);
+                    /*
+                    if let Ok(Some((path, opt_line_no, Some(function_name)))) =
+                        self.addr2line_mappings
+                            .entry(lib.start)
+                            .or_insert_with(|| {
+                                println!("constructing addr2line mapping for lib at path {}", lib.debug_path);
+                                addr2line::Options::default()
+                                    .with_functions()
+                                    .with_demangling()
+                                    .build(&lib.debug_path)
+                                    .expect("Couldn't create mapping for shared library")
+                            })
+                            .locate(relative_address)
+                    {
+                        println!(
+                            "  {} [{} + 0x{:x} at {}:{:?}]",
+                            function_name,
+                            lib.name,
+                            relative_address,
+                            path.to_str().unwrap(),
+                            opt_line_no
+                        );
+                    }*/
+
+                    if let None = *stack_frame_info {
+                        if let Ok(stack_fragment) =
+                            get_addr2line_stack(&lib.debug_path, relative_address)
+                        {
+                            *stack_frame_info = Some(stack_fragment);
+                        }
+                    }
+
+                    if let &mut Some(ref stack_fragment) = stack_frame_info {
+                        for &StackFrameInfo {
+                            ref function_name,
+                            ref file_path_str,
+                            ref line_number,
+                        } in stack_fragment
+                        {
+                            println!("  {} ({}:{})", function_name, file_path_str, line_number);
+                        }
+                    } else {
+                        println!(
+                            "  0x{:016x} [{} + 0x{:x}]",
+                            address,
+                            lib.name,
+                            relative_address
+                        );
+                    }
                 } else {
                     println!("  0x{:016x} [unknown binary]", address);
                 }
