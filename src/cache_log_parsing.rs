@@ -262,7 +262,7 @@ fn test_parse_line() {
         parse_line_of_pid(
             "==16935== LLCacheSwap: new_start=1ffeffe400 old_start=0 size=64",
         ),
-        IResult::Done("", (
+        Some((
             16935,
             LineContent::LLCacheLineSwap {
                 new_start: 0x1ffeffe400,

@@ -19,6 +19,7 @@ mod ranges;
 mod cpucache;
 mod stack_table;
 mod cache_log_info;
+mod arenas;
 
 use std::io::{BufRead, BufReader};
 use std::fs::File;

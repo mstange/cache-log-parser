@@ -144,7 +144,7 @@ impl Ranges {
         if range_index >= self.r.len() {
             return false;
         }
-        let range_start = self.r[range_index].0;
-        range_start <= value
+        let (start, end) = self.r[range_index];
+        start <= value && value < end
     }
 }
