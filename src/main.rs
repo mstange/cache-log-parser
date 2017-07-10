@@ -23,7 +23,7 @@ mod arenas;
 
 use std::io::{BufRead, BufReader};
 use std::fs::File;
-use cache_log_info::{print_extra_field_info};
+use cache_log_info::{print_extra_field_info, print_multiple_read_ranges};
 
 fn main() {
     let matches = clap::App::new("cache-log-parser")
@@ -41,9 +41,9 @@ fn main() {
     // print_display_list_info(iter)?;
     // print_cache_contents_at(iter, 67317106)?;
     // print_cache_contents_at(iter, cache, 58256278)?;
-    print_extra_field_info(iter).expect("someting wong");
+    // print_extra_field_info(iter).expect("someting wong");
     // print_other_lines(iter)?;
     // print_fork_lines(iter)?;
     // print_cache_read_overhead(iter, 67317106, 67500260)?;
-    // print_multiple_read_ranges(iter, 100842605, 101204593)?;
+    print_multiple_read_ranges(iter, 100842605, 101204593);
 }

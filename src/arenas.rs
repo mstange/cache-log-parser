@@ -134,15 +134,18 @@ impl Arenas {
                                       ident1: &str,
                                       type2: &str,
                                       ident2: &str) {
+        // println!("associate_thing_with_thing {} {} {} {}", type1, ident1, type2, ident2);
         self.get_thing_mut(ident1).associate_with(type2, ident2);
         self.get_thing_mut(ident2).associate_with(type1, ident1);
     }
 
     pub fn associate_arena_with_thing(&mut self, ident1: &str, type2: &str, ident2: &str) {
+        // println!("associate_arena_with_thing {} {} {}", ident1, type2, ident2);
         self.get_arena_mut(ident1).associate_with(type2, ident2);
     }
 
     pub fn set_thing_property(&mut self, ident: &str, property_name: &str, property_value: &str) {
+        // println!("associate_thing_with_thing {} {} {}", ident, property_name, property_value);
         self.get_thing_mut(ident).set_property(property_name, property_value);
     }
 
@@ -154,6 +157,15 @@ impl Arenas {
 
     pub fn arena_ranges<'a>(&'a self, ident: &str) -> Option<&'a Ranges> {
         self.arenas.get(ident).map(|arena| arena.ranges())
+    }
+
+    pub fn arena_covering_address(&self, address: u64) -> Option<String> {
+        for (ident, arena) in &self.arenas {
+            if arena.ranges().contains(address) {
+                return Some(ident.to_string());
+            }
+        }
+        None
     }
 }
 
