@@ -1,0 +1,161 @@
+diff --git a/layout/base/nsLayoutUtils.cpp b/layout/base/nsLayoutUtils.cpp
+--- a/layout/base/nsLayoutUtils.cpp
++++ b/layout/base/nsLayoutUtils.cpp
+@@ -3474,6 +3474,7 @@ nsLayoutUtils::PaintFrame(gfxContext* aR
+   }
+ 
+   TimeStamp startBuildDisplayList = TimeStamp::Now();
++  print_arena_debug("Begin DisplayList building\n");
+   nsDisplayListBuilder builder(aFrame, aBuilderMode,
+                                !(aFlags & PaintFrameFlags::PAINT_HIDE_CARET));
+   if (aFlags & PaintFrameFlags::PAINT_IN_TRANSFORM) {
+@@ -3632,6 +3633,7 @@ nsLayoutUtils::PaintFrame(gfxContext* aR
+     }
+   }
+ 
++  print_arena_debug("End DisplayList building\n");
+   Telemetry::AccumulateTimeDelta(Telemetry::PAINT_BUILD_DISPLAYLIST_TIME,
+                                  startBuildDisplayList);
+ 
+diff --git a/layout/painting/nsDisplayList.cpp b/layout/painting/nsDisplayList.cpp
+--- a/layout/painting/nsDisplayList.cpp
++++ b/layout/painting/nsDisplayList.cpp
+@@ -1369,7 +1369,9 @@ nsDisplayListBuilder::AllocateDisplayIte
+ {
+   void* p = Allocate(sizeof(DisplayItemClipChain));
+   DisplayItemClipChain* c = new (KnownNotNull, p) DisplayItemClipChain{ aClip, aASR, aParent };
+-  mClipChainsToDestroy.AppendElement(c);
++  if (aClip.GetRoundedRectCount() != 0) {
++    mClipChainsToDestroy.AppendElement(c);
++  }
+   return c;
+ }
+ 
+@@ -1894,8 +1896,10 @@ nsDisplayList::GetBounds(nsDisplayListBu
+ 
+ nsRect
+ nsDisplayList::GetClippedBoundsWithRespectToASR(nsDisplayListBuilder* aBuilder,
+-                                                const ActiveScrolledRoot* aASR) const {
++                                                const ActiveScrolledRoot* aASR,
++                                                nsRect* aOutVisibleRectUnion) const {
+   nsRect bounds;
++  nsRect visibleRectUnion;
+   for (nsDisplayItem* i = GetBottom(); i != nullptr; i = i->GetAbove()) {
+     nsRect r = i->GetClippedBounds(aBuilder);
+     if (aASR != i->GetActiveScrolledRoot() && !r.IsEmpty()) {
+@@ -1911,6 +1915,10 @@ nsDisplayList::GetClippedBoundsWithRespe
+       }
+     }
+     bounds.UnionRect(bounds, r);
++    visibleRectUnion.UnionRect(visibleRectUnion, i->GetVisibleRect());
++  }
++  if (aOutVisibleRectUnion) {
++    *aOutVisibleRectUnion = visibleRectUnion;
+   }
+   return bounds;
+ }
+diff --git a/layout/painting/nsDisplayList.h b/layout/painting/nsDisplayList.h
+--- a/layout/painting/nsDisplayList.h
++++ b/layout/painting/nsDisplayList.h
+@@ -2480,7 +2480,8 @@ public:
+    * then this method trigger an assertion failure.
+    */
+   nsRect GetClippedBoundsWithRespectToASR(nsDisplayListBuilder* aBuilder,
+-                                          const ActiveScrolledRoot* aASR) const;
++                                          const ActiveScrolledRoot* aASR,
++                                          nsRect* aOutVisibleRectUnion = nullptr) const;
+ 
+   /**
+    * Find the topmost display item that returns a non-null frame, and return
+@@ -3765,7 +3766,8 @@ public:
+    */
+   virtual void UpdateBounds(nsDisplayListBuilder* aBuilder) override
+   {
+-    mBounds = mList.GetClippedBoundsWithRespectToASR(aBuilder, mActiveScrolledRoot);
++    nsRect visibleRectUnion;
++    mBounds = mList.GetClippedBoundsWithRespectToASR(aBuilder, mActiveScrolledRoot, &visibleRectUnion);
+     // The display list may contain content that's visible outside the visible
+     // rect (i.e. the current dirty rect) passed in when the item was created.
+     // This happens when the dirty rect has been restricted to the visual
+@@ -3773,7 +3775,7 @@ public:
+     // rects in nsDisplayListBuilder::MarkOutOfFlowFrameForDisplay), but that
+     // frame contains placeholders for out-of-flows that aren't descendants of
+     // the frame.
+-    mVisibleRect.UnionRect(mBaseVisibleRect, mList.GetVisibleRect());
++    mVisibleRect.UnionRect(mBaseVisibleRect, visibleRectUnion);
+   }
+   virtual void HitTest(nsDisplayListBuilder* aBuilder, const nsRect& aRect,
+                        HitTestState* aState, nsTArray<nsIFrame*> *aOutFrames) override;
+diff --git a/tools/profiler/core/platform.cpp b/tools/profiler/core/platform.cpp
+--- a/tools/profiler/core/platform.cpp
++++ b/tools/profiler/core/platform.cpp
+@@ -28,6 +28,7 @@
+ 
+ #include <algorithm>
+ #include <ostream>
++#include <iostream>
+ #include <fstream>
+ #include <sstream>
+ #include <errno.h>
+@@ -111,19 +112,28 @@
+ #include "mozilla/Sprintf.h"
+ #include "mozilla/ArenaAllocator.h"
+ 
+-static FILE* arena_debug_log;
++// static FILE* arena_debug_log;
+ 
+ void MOZ_FORMAT_PRINTF(1, 2) print_arena_debug(const char* str, ...)
+ {
+-  if (!arena_debug_log) {
+-    char buf[1024];
+-    SprintfLiteral(buf, "/Users/mstange/Desktop/arena_debug_%d.log", getpid());
+-    arena_debug_log = fopen(buf, "w");
+-  }
++  // if (!arena_debug_log) {
++  //   char buf[1024];
++  //   SprintfLiteral(buf, "/Users/mstange/Desktop/arena_debug_%d.log", getpid());
++  //   arena_debug_log = fopen(buf, "w");
++  // }
++
++  // va_list pl;
++  // va_start(pl, str);
++  // vfprintf(stderr, str, pl);
++  // va_end(pl);
++
++  char buf[1024];
+   va_list pl;
+   va_start(pl, str);
+-  vfprintf(arena_debug_log, str, pl);
++  VsprintfLiteral(buf, str, pl);
+   va_end(pl);
++
++  fprintf(stderr, "==%d== %s", int(getpid()), buf);
+ }
+ 
+ using namespace mozilla;
+@@ -1362,7 +1372,7 @@ SafeJSInteger(uint64_t aValue) {
+ static void
+ AddSharedLibraryInfoToStream(JSONWriter& aWriter, const SharedLibrary& aLib)
+ {
+-  aWriter.StartObjectElement();
++  aWriter.StartObjectElement(aWriter.SingleLineStyle);
+   aWriter.IntProperty("start", SafeJSInteger(aLib.GetStart()));
+   aWriter.IntProperty("end", SafeJSInteger(aLib.GetEnd()));
+   aWriter.IntProperty("offset", SafeJSInteger(aLib.GetOffset()));
+@@ -2183,6 +2193,16 @@ profiler_init(void* aStackTop)
+     // startup, even if no profiling is actually to be done. So, instead, it is
+     // created on demand at the first call to PlatformStart().
+ 
++    std::ostringstream sharedLibs;
++    JSONWriter w(MakeUnique<OStreamJSONWriteFunc>(sharedLibs));
++    w.StartArrayElement(w.SingleLineStyle);
++    AppendSharedLibraries(w);
++    w.EndArray();
++    std::string sharedLibsString = sharedLibs.str();
++    for (size_t pos = 0; pos < sharedLibsString.length(); pos += 512) {
++      print_arena_debug("SharedLibsChunk: %s\n", sharedLibsString.substr(pos, 512).c_str());
++    }
++
+     if (!getenv("MOZ_PROFILER_STARTUP")) {
+       return;
+     }

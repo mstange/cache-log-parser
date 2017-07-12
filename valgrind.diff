@@ -1,0 +1,332 @@
+Index: cachegrind/cg_sim.c
+===================================================================
+--- cachegrind/cg_sim.c	(revision 16457)
++++ cachegrind/cg_sim.c	(working copy)
+@@ -48,6 +48,7 @@
+    Int          tag_shift;
+    HChar        desc_line[128];         /* large enough */
+    UWord*       tags;
++   ULong*       use_tags;
+ } cache_t2;
+ 
+ /* By this point, the size/assoc/line_size has been checked. */
+@@ -75,10 +76,48 @@
+    c->tags = VG_(malloc)("cg.sim.ci.1",
+                          sizeof(UWord) * c->sets * c->assoc);
+ 
++   c->use_tags = VG_(malloc)("cg.sim.ci.2",
++                         sizeof(ULong) * c->sets * c->assoc);
++
+    for (i = 0; i < c->sets * c->assoc; i++)
+       c->tags[i] = 0;
+ }
+ 
++static cache_t2 LL;
++static cache_t2 I1;
++static cache_t2 D1;
++
++#include "pub_tool_threadstate.h"
++#include "pub_tool_stacktrace.h"
++
++static void llMissCacheLine(UWord evicted_tag, UWord cached_tag, ULong use_bits)
++{
++   Int used_bytes = __builtin_popcountll(use_bits);
++   VG_(umsg)("LLCacheSwapUB: new_start=%llx old_start=%llx size=%u used_bytes=%d\n",
++               (ULong)(cached_tag << LL.line_size_bits),
++               (ULong)(evicted_tag << LL.line_size_bits),
++               (UInt)LL.line_size,
++               used_bytes);
++}
++
++static void print_cheap_stacktrace(ThreadId tid);
++
++static void llMiss(Addr addr, UChar size, const HChar* why)
++{
++   ThreadId tid = VG_(get_running_tid)();
++   VG_(umsg)("LLMiss: why=%6s size=%u addr=%llx tid=%u\n",
++               why, (UInt)size, (ULong)addr, tid);
++   if (1) {
++      print_cheap_stacktrace(tid);
++   }
++   if (0) {
++      VG_(get_and_pp_StackTrace)(tid, VG_(clo_backtrace_size));
++      VG_(umsg)("\n");
++   }
++}
++
++#define UINT64_MAX 0xffffffffffffffff
++
+ /* This attribute forces GCC to inline the function, getting rid of a
+  * lot of indirection around the cache_t2 pointer, if it is known to be
+  * constant in the caller (the caller is inlined itself).
+@@ -86,37 +125,50 @@
+  */
+ __attribute__((always_inline))
+ static __inline__
+-Bool cachesim_setref_is_miss(cache_t2* c, UInt set_no, UWord tag)
++Bool cachesim_setref_is_miss(cache_t2* c, UInt set_no, UWord tag, ULong use_bits)
+ {
+    int i, j;
+    UWord *set;
++   ULong *use_set;
+ 
+    set = &(c->tags[set_no * c->assoc]);
++   use_set = &(c->use_tags[set_no * c->assoc]);
+ 
+    /* This loop is unrolled for just the first case, which is the most */
+    /* common.  We can't unroll any further because it would screw up   */
+    /* if we have a direct-mapped (1-way) cache.                        */
+-   if (tag == set[0])
++   if (tag == set[0]) {
++      use_set[0] |= use_bits;
+       return False;
++   }
+ 
+    /* If the tag is one other than the MRU, move it into the MRU spot  */
+    /* and shuffle the rest down.                                       */
+    for (i = 1; i < c->assoc; i++) {
+       if (tag == set[i]) {
++         ULong use_tag = use_set[i];
+          for (j = i; j > 0; j--) {
+             set[j] = set[j - 1];
++            use_set[j] = use_set[j - 1];
+          }
+          set[0] = tag;
++         use_set[0] = use_tag | use_bits;
+ 
+          return False;
+       }
+    }
+ 
++   if (c == &LL) {
++      llMissCacheLine(set[c->assoc - 1], tag, use_set[c->assoc - 1]);
++   }
++
+    /* A miss;  install this tag as MRU, shuffle rest down. */
+    for (j = c->assoc - 1; j > 0; j--) {
+       set[j] = set[j - 1];
++      use_set[j] = use_set[j - 1];
+    }
+    set[0] = tag;
++   use_set[0] = use_bits;
+ 
+    return True;
+ }
+@@ -140,8 +192,10 @@
+    UWord tag1   = block1;
+ 
+    /* Access entirely within line. */
+-   if (block1 == block2)
+-      return cachesim_setref_is_miss(c, set1, tag1);
++   if (block1 == block2) {
++      ULong use_bits = (UINT64_MAX >> (64 - size)) << (a % 64);
++      return cachesim_setref_is_miss(c, set1, tag1, use_bits);
++   }
+ 
+    /* Access straddles two lines. */
+    else if (block1 + 1 == block2) {
+@@ -148,14 +202,18 @@
+       UInt  set2 = block2 & c->sets_min_1;
+       UWord tag2 = block2;
+ 
++      UChar size1 = (block2 << c->line_size_bits) - a;
++      UChar size2 = size - size1;
++
++      ULong use_bits1 = (UINT64_MAX >> (64 - size1)) << (a % 64);
++      ULong use_bits2 = (UINT64_MAX >> (64 - size2));
++
+       /* always do both, as state is updated as side effect */
+-      if (cachesim_setref_is_miss(c, set1, tag1)) {
+-         cachesim_setref_is_miss(c, set2, tag2);
+-         return True;
+-      }
+-      return cachesim_setref_is_miss(c, set2, tag2);
++      Bool isMiss1 = cachesim_setref_is_miss(c, set1, tag1, use_bits1);
++      Bool isMiss2 = cachesim_setref_is_miss(c, set2, tag2, use_bits2);
++      return isMiss1 || isMiss2;
+    }
+-   VG_(printf)("addr: %lx  size: %u  blocks: %lu %lu",
++   VG_(umsg)("addr: %lx  size: %u  blocks: %lu %lu",
+                a, size, block1, block2);
+    VG_(tool_panic)("item straddles more than two cache sets");
+    /* not reached */
+@@ -162,16 +220,14 @@
+    return True;
+ }
+ 
+-
+-static cache_t2 LL;
+-static cache_t2 I1;
+-static cache_t2 D1;
+-
+ static void cachesim_initcaches(cache_t I1c, cache_t D1c, cache_t LLc)
+ {
+    cachesim_initcache(I1c, &I1);
+    cachesim_initcache(D1c, &D1);
+    cachesim_initcache(LLc, &LL);
++
++   VG_(umsg)("LL cache information: %s\n", LL.desc_line);
++   VG_(umsg)("sizeof(ULong): %d\n", (Int)sizeof(ULong));
+ }
+ 
+ __attribute__((always_inline))
+@@ -180,8 +236,10 @@
+ {
+    if (cachesim_ref_is_miss(&I1, a, size)) {
+       (*m1)++;
+-      if (cachesim_ref_is_miss(&LL, a, size))
++      if (cachesim_ref_is_miss(&LL, a, size)) {
+          (*mL)++;
++         llMiss(a, size, "I1_Gen");
++      }
+    }
+ }
+ 
+@@ -194,12 +252,15 @@
+    UInt  I1_set = block & I1.sets_min_1;
+ 
+    // use block as tag
+-   if (cachesim_setref_is_miss(&I1, I1_set, block)) {
++   if (cachesim_setref_is_miss(&I1, I1_set, block, 0)) {
+       UInt  LL_set = block & LL.sets_min_1;
+       (*m1)++;
+       // can use block as tag as L1I and LL cache line sizes are equal
+-      if (cachesim_setref_is_miss(&LL, LL_set, block))
++      ULong use_bits = (UINT64_MAX >> (64 - size)) << (a % 64);
++      if (cachesim_setref_is_miss(&LL, LL_set, block, use_bits)) {
+          (*mL)++;
++         llMiss(a, size, "I1_NoX");
++      }
+    }
+ }
+ 
+@@ -209,8 +270,10 @@
+ {
+    if (cachesim_ref_is_miss(&D1, a, size)) {
+       (*m1)++;
+-      if (cachesim_ref_is_miss(&LL, a, size))
++      if (cachesim_ref_is_miss(&LL, a, size)) {
+          (*mL)++;
++         llMiss(a, size, "D1");
++      }
+    }
+ }
+ 
+@@ -237,3 +300,117 @@
+ /*--- end                                                 cg_sim.c ---*/
+ /*--------------------------------------------------------------------*/
+ 
++#include "pub_tool_hashtable.h"
++
++UInt next_frame_index;
++VgHashTable* known_frames;
++UInt next_stack_index;
++VgHashTable* known_stacks;
++
++typedef
++   struct _VgFrameHashNode {
++      VgHashNode head;
++      Addr frame_address;
++      UInt frame_index;
++   }
++   VgFrameHashNode;
++
++static Word cmp_frame_node(const void* node1, const void* node2)
++{
++   const VgFrameHashNode* fnode1 = node1;
++   const VgFrameHashNode* fnode2 = node2;
++   return (Word)(fnode1->frame_address -
++                 fnode2->frame_address);
++}
++
++typedef
++   struct _VgStackHashNode {
++      VgHashNode head;
++      UInt parent_stack;
++      UInt frame_index;
++      UInt stack_index;
++   }
++   VgStackHashNode;
++
++static Word cmp_stack_node(const void* node1, const void* node2)
++{
++   const VgStackHashNode* snode1 = node1;
++   const VgStackHashNode* snode2 = node2;
++   if (snode1->parent_stack < snode2->parent_stack)
++      return -1;
++   else if (snode1->parent_stack > snode2->parent_stack)
++      return 1;
++   else
++      return snode1->frame_index - snode2->frame_index;
++}
++
++static UInt lookup_or_add_frame(Addr frame)
++{
++   if (known_frames == NULL) {
++      known_frames = VG_(HT_construct)("cg.sim.known_frames");
++   }
++   VgFrameHashNode node = { { NULL, (UWord)frame }, frame, 0 };
++   VgFrameHashNode* frame_node = VG_(HT_gen_lookup)(known_frames, &node, cmp_frame_node);
++   if (frame_node == NULL) {
++      UInt frame_index = next_frame_index++;
++
++      VgFrameHashNode* new_node =
++         VG_(malloc)("cg.sim.loaf.1", sizeof(VgFrameHashNode));
++      new_node->head.key = (UWord)frame;
++      new_node->frame_address = frame;
++      new_node->frame_index = frame_index;
++      VG_(HT_add_node)(known_frames, new_node);
++      VG_(umsg)("add_frame: %u %llx\n", frame_index, (ULong)frame);
++      return frame_index;
++   }
++   return frame_node->frame_index;
++}
++
++static UInt lookup_or_add_stack_entry(UInt parent_stack, UInt frame_index)
++{
++   if (known_stacks == NULL) {
++      known_stacks = VG_(HT_construct)("cg.sim.known_stacks");
++   }
++   UWord key = (UWord)(parent_stack << 16) ^ (UWord)frame_index;
++   VgStackHashNode node = { { NULL, key }, parent_stack, frame_index, 0 };
++   VgStackHashNode* stack_node = VG_(HT_gen_lookup)(known_stacks, &node, cmp_stack_node);
++   if (stack_node == NULL) {
++      UInt stack_index = next_stack_index++;
++
++      VgStackHashNode* new_node =
++         VG_(malloc)("cg.sim.loase.1", sizeof(VgStackHashNode));
++      new_node->head.key = key;
++      new_node->parent_stack = parent_stack;
++      new_node->frame_index = frame_index;
++      new_node->stack_index = stack_index;
++      VG_(HT_add_node)(known_stacks, new_node);
++      VG_(umsg)("add_stack: %u %u %u\n", stack_index, parent_stack, frame_index);
++      return stack_index;
++   }
++   return stack_node->stack_index;
++}
++
++static UInt lookup_or_add_stack(StackTrace frames, UInt frame_count)
++{
++   UInt stack = 0;
++   for (Int i = frame_count - 1; i >= 0; i--) {
++      UInt frame_index = lookup_or_add_frame(frames[i]);
++      stack = lookup_or_add_stack_entry(stack, frame_index);
++   }
++   return stack;
++}
++
++static void print_known_stack(StackTrace frames, UInt frame_count)
++{
++   UInt stack_index = lookup_or_add_stack(frames, frame_count);
++   VG_(umsg)("stack: %u\n", stack_index);
++}
++
++static void print_cheap_stacktrace(ThreadId tid)
++{
++   Addr ips[512];
++   UInt frame_count = VG_(get_StackTrace)(tid, ips, 512, NULL, NULL, 0);
++   print_known_stack(ips, frame_count);
++}
++
++
