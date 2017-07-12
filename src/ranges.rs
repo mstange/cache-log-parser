@@ -75,11 +75,11 @@ impl Ranges {
             }
             let mut prev_end = first_end;
             for &(start, end) in self.r.iter().skip(1) {
-                if !(prev_end < start) {
-                    panic!("start is not strictly larger than prev_end! {}, {}",
-                           prev_end,
-                           start);
-                }
+                // if !(prev_end < start) {
+                //     panic!("start is not strictly larger than prev_end! {}, {}",
+                //            prev_end,
+                //            start);
+                // }
                 if !(start < end) {
                     panic!("end is not strictly larger than start! {}, {}", start, end);
                 }

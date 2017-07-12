@@ -1,7 +1,7 @@
 use ranges::Ranges;
 
 pub struct CPUCache {
-    line_size: u64,
+    line_size: u8,
     line_size_bits: u8,
     sets_min_1: u64,
     assoc: u64,
@@ -21,16 +21,16 @@ fn log2(x: u32) -> Option<u8> {
 }
 
 impl CPUCache {
-    pub fn new(size: u32, line_size: u32, assoc: u32) -> CPUCache {
-        let sets = ((size / line_size) / assoc) as u64;
+    pub fn new(size: u32, line_size: u8, assoc: u32) -> CPUCache {
+        let sets = ((size / line_size as u32) / assoc) as u64;
         CPUCache {
             // size: size as u64,
-            line_size: line_size as u64,
-            line_size_bits: log2(line_size).unwrap(),
+            line_size: line_size,
+            line_size_bits: log2(line_size as u32).unwrap(),
             // sets,
             sets_min_1: sets - 1,
             assoc: assoc as u64,
-            tags: vec![0; (size / line_size) as usize],
+            tags: vec![0; (size / line_size as u32) as usize],
         }
     }
 
@@ -99,7 +99,7 @@ impl CPUCache {
         for tag in &self.tags {
             if *tag != 0 {
                 let start = tag << self.line_size_bits;
-                ranges.add(start, self.line_size);
+                ranges.add(start, self.line_size as u64);
             }
         }
         ranges.get()

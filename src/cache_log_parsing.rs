@@ -7,17 +7,18 @@ use std::str::FromStr;
 pub enum LineContent<'a> {
     LLCacheInfo {
         size: u32,
-        line_size: u32,
+        line_size: u8,
         assoc: u32,
     },
     LLCacheLineSwap {
         new_start: u64,
         old_start: u64,
-        size: u64,
+        size: u8,
+        used_bytes: Option<u8>,
     },
     LLMiss {
         why: &'a str,
-        size: u64,
+        size: u8,
         addr: u64,
         tid: u32,
     },
@@ -82,6 +83,19 @@ named!(parse_llcache_info<&str, LineContent>, do_parse!(
   ( LineContent::LLCacheInfo{ size, line_size, assoc } )
 ));
 
+// LLCacheSwapUB: new_start=<new_start> old_start=<old_start> size=<size> used_bytes=<used_bytes>
+named!(parse_llcache_line_swap_with_used_bytes<&str, LineContent>, do_parse!(
+  tag!("LLCacheSwapUB: new_start=") >>
+  new_start: map_res!(hex_digit, from_hex_str_u64) >>
+  tag!(" old_start=") >>
+  old_start: map_res!(hex_digit, from_hex_str_u64) >>
+  tag!(" size=") >>
+  size: map_res!(digit, FromStr::from_str) >>
+    tag!(" used_bytes=") >>
+    used_bytes: map_res!(digit, FromStr::from_str) >>
+  ( LineContent::LLCacheLineSwap{ new_start, old_start, size, used_bytes: Some(used_bytes) } )
+));
+
 // LLCacheSwap: new_start=<new_start> old_start=<old_start> size=<size>
 named!(parse_llcache_line_swap<&str, LineContent>, do_parse!(
   tag!("LLCacheSwap: new_start=") >>
@@ -90,7 +104,7 @@ named!(parse_llcache_line_swap<&str, LineContent>, do_parse!(
   old_start: map_res!(hex_digit, from_hex_str_u64) >>
   tag!(" size=") >>
   size: map_res!(digit, FromStr::from_str) >>
-  ( LineContent::LLCacheLineSwap{ new_start, old_start, size } )
+  ( LineContent::LLCacheLineSwap{ new_start, old_start, size, used_bytes: None } )
 ));
 
 // LLMiss: why=    D1 size=8 addr=0000000005cb2438 tid=1
@@ -210,6 +224,7 @@ named!(parse_other<&str, LineContent>, do_parse!(
 named!(parse_line<&str, LineContent>, alt!(
     parse_llcache_info |
     parse_llcache_line_swap | parse_llmiss | parse_stack_for_llmiss |
+    parse_llcache_line_swap_with_used_bytes |
     parse_begin_display_list |  parse_end_display_list |
     parse_allocate_arena_chunk | parse_deallocate_arena_chunk |
     parse_association | parse_extra_field |
@@ -228,7 +243,7 @@ named!(parse_line_of_pid_impl<&str, (i32, LineContent)>, do_parse!(
 pub fn parse_line_of_pid(line: &str) -> Option<(i32, LineContent)> {
     match parse_line_of_pid_impl(line) {
         IResult::Done(_, val) => Some(val),
-        _ => None
+        _ => None,
     }
 }
 
@@ -242,6 +257,7 @@ fn test_parse_line() {
                 new_start: 0x1ffefffe00,
                 old_start: 0x0,
                 size: 64,
+                used_bytes: None,
             },
         )
     );
@@ -268,6 +284,22 @@ fn test_parse_line() {
                 new_start: 0x1ffeffe400,
                 old_start: 0x0,
                 size: 64,
+                used_bytes: None,
+            },
+        ))
+    );
+
+    assert_eq!(
+        parse_line_of_pid(
+            "==16935== LLCacheSwapUB: new_start=1ffeffe400 old_start=0 size=64 used_bytes=23",
+        ),
+        Some((
+            16935,
+            LineContent::LLCacheLineSwap {
+                new_start: 0x1ffeffe400,
+                old_start: 0x0,
+                size: 64,
+                used_bytes: Some(23),
             },
         ))
     );

@@ -1,7 +1,7 @@
 use serde_json;
 use std::cmp::Ordering;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct SharedLibrary {
     pub start: u64,
@@ -15,6 +15,7 @@ pub struct SharedLibrary {
     pub arch: String,
 }
 
+#[derive(Clone)]
 pub struct SharedLibraries {
     l: Vec<SharedLibrary>,
 }

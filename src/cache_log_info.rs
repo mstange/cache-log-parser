@@ -8,10 +8,13 @@ use cpucache::CPUCache;
 use stack_table::StackTable;
 use shared_libraries::SharedLibraries;
 use arenas::Arenas;
+use profile::ProfileBuilder;
+use rand::{self, Rng};
 
 #[allow(dead_code)]
 pub fn print_display_list_info<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io::Error>
-    where T: io::BufRead
+where
+    T: io::BufRead,
 {
     let mut bytes_read = 0;
     let mut ranges_read = Ranges::new();
@@ -25,16 +28,20 @@ pub fn print_display_list_info<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result
                     in_display_list = true;
                 }
                 LineContent::EndDisplayList => {
-                    println!("DisplayList for {} lines from {} to {}",
-                             (line_index - dl_begin),
-                             dl_begin,
-                             line_index);
+                    println!(
+                        "DisplayList for {} lines from {} to {}",
+                        (line_index - dl_begin),
+                        dl_begin,
+                        line_index
+                    );
                     let ranges_read_size = ranges_read.cumulative_size();
                     let overhead = bytes_read as f64 / ranges_read_size as f64;
-                    println!("bytes_read: {}, cumulative size of ranges_read: {}, overhead: {}",
-                             bytes_read,
-                             ranges_read_size,
-                             overhead);
+                    println!(
+                        "bytes_read: {}, cumulative size of ranges_read: {}, overhead: {}",
+                        bytes_read,
+                        ranges_read_size,
+                        overhead
+                    );
                     in_display_list = false;
                     bytes_read = 0;
                     ranges_read = Ranges::new();
@@ -42,12 +49,14 @@ pub fn print_display_list_info<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result
                 line_contents => {
                     if in_display_list {
                         if let LineContent::LLCacheLineSwap {
-                                   new_start,
-                                   old_start: _,
-                                   size,
-                               } = line_contents {
+                            new_start,
+                            old_start: _,
+                            size,
+                            used_bytes: _,
+                        } = line_contents
+                        {
                             bytes_read = bytes_read + size;
-                            ranges_read.add(new_start, size);
+                            ranges_read.add(new_start, size as u64);
                         }
                     }
                 }
@@ -57,17 +66,122 @@ pub fn print_display_list_info<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result
     Ok(())
 }
 
+#[derive(Debug)]
+struct CacheLineRead {
+    line_index: usize,
+    address: u64,
+    size: u8,
+    used_bytes: Option<u8>,
+    stack: Option<usize>,
+}
+
+#[allow(dead_code)]
+pub fn print_cache_line_wastage<T>(
+    iter: iter::Enumerate<io::Lines<T>>,
+    from_line: usize,
+    to_line: usize,
+) -> Result<(), io::Error>
+where
+    T: io::BufRead,
+{
+    let mut stack_info = StackInfoCollector::new();
+    let mut reads: Vec<CacheLineRead> = Vec::new();
+    let mut reads_with_pending_used_bytes: HashMap<u64, usize> = HashMap::new();
+    let mut reads_with_pending_stacks: Vec<usize> = Vec::new();
+    for (line_index, line) in iter {
+        if let Some((_, line_contents)) = parse_line_of_pid(&line?) {
+            if line_index < to_line {
+                stack_info.process_line(&line_contents);
+            }
+            if line_index < from_line {
+                continue;
+            }
+            match line_contents {
+                LineContent::LLCacheLineSwap {
+                    new_start,
+                    old_start,
+                    size,
+                    used_bytes,
+                } => {
+                    if let Some(read_index) = reads_with_pending_used_bytes.remove(&old_start) {
+                        // println!("assigning used_bytes {:?} to address read at address {:x}.", used_bytes, old_start);
+                        reads[read_index].used_bytes = used_bytes;
+                    }
+                    if line_index < to_line {
+                        let next_read_index = reads.len();
+                        reads_with_pending_used_bytes.insert(new_start, next_read_index);
+                        reads_with_pending_stacks.push(next_read_index);
+                        reads.push(CacheLineRead {
+                            line_index,
+                            address: new_start,
+                            size,
+                            used_bytes: None,
+                            stack: None,
+                        });
+                    } else if reads_with_pending_used_bytes.is_empty() {
+                        break;
+                    }
+                }
+                LineContent::StackForLLMiss(stack) => {
+                    for read_index in reads_with_pending_stacks.drain(..) {
+                        reads[read_index].stack = Some(stack);
+                    }
+                }
+                _ => {}
+            }
+        };
+    }
+
+    // println!("reads: {:?}", reads);
+
+    // want to insert roughly 1 sample per 1KB wasted.
+    // for 1 byte wasted, the probability of inserting a sample is 1 / 512.
+
+    let bytes_per_ms: u32 = 1024;
+    let bytes_per_sample: u32 = 256;
+
+    let mut profile_builder = ProfileBuilder::new(
+        stack_info.get_stack_table(),
+        bytes_per_sample as f64 / bytes_per_ms as f64,
+    );
+
+    let mut rng = rand::weak_rng();
+    let mut wasted_bytes_cumulative = 0;
+    for CacheLineRead {
+        line_index: _,
+        address: _,
+        size,
+        used_bytes,
+        stack,
+    } in reads.into_iter()
+    {
+        if let (Some(used_bytes), Some(stack)) = (used_bytes, stack) {
+            let wasted_bytes = size - used_bytes;
+            if rng.next_u32() % bytes_per_sample < wasted_bytes as u32 {
+                profile_builder.add_sample(stack, wasted_bytes_cumulative as f64 / bytes_per_ms as f64);
+            }
+            wasted_bytes_cumulative += wasted_bytes as u64;
+        }
+    }
+    profile_builder
+        .save_to_file("/home/mstange/Desktop/profile.sps.json")
+        .expect("JSON file writing went wrong");
+    Ok(())
+}
+
 #[allow(dead_code)]
 pub fn print_extra_field_info<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io::Error>
-    where T: io::BufRead
+where
+    T: io::BufRead,
 {
     for (_, line) in iter {
         if let Some((_, line_contents)) = parse_line_of_pid(&line?) {
             if let LineContent::ExtraField {
-                       ident,
-                       field_name,
-                       field_content,
-                   } = line_contents {
+                ident,
+                field_name,
+                field_content,
+            } = line_contents
+            {
                 println!("{} {} {}", ident, field_name, field_content);
             }
         };
@@ -77,7 +191,8 @@ pub fn print_extra_field_info<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<
 
 #[allow(dead_code)]
 pub fn print_other_lines<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io::Error>
-    where T: io::BufRead
+where
+    T: io::BufRead,
 {
     for (line_index, line) in iter {
         if let Some((_, line_contents)) = parse_line_of_pid(&line?) {
@@ -91,15 +206,17 @@ pub fn print_other_lines<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), i
 
 #[allow(dead_code)]
 pub fn print_fork_lines<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io::Error>
-    where T: io::BufRead
+where
+    T: io::BufRead,
 {
     let mut last_frame_index = -1;
     for (line_index, line) in iter {
         if let Some((_, line_contents)) = parse_line_of_pid(&line?) {
             if let LineContent::AddFrame {
-                       index: frame_index,
-                       address: _,
-                   } = line_contents {
+                index: frame_index,
+                address: _,
+            } = line_contents
+            {
                 if frame_index as i32 <= last_frame_index {
                     println!("something forked at or before line {}", line_index)
                 }
@@ -111,10 +228,12 @@ pub fn print_fork_lines<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io
 }
 
 #[allow(dead_code)]
-pub fn print_cache_contents_at<T>(mut iter: iter::Enumerate<io::Lines<T>>,
-                                  at_line_index: usize)
-                                  -> Result<(), io::Error>
-    where T: io::BufRead
+pub fn print_cache_contents_at<T>(
+    mut iter: iter::Enumerate<io::Lines<T>>,
+    at_line_index: usize,
+) -> Result<(), io::Error>
+where
+    T: io::BufRead,
 {
     let mut cache = loop {
         if let Some((_, line)) = iter.next() {
@@ -123,7 +242,8 @@ pub fn print_cache_contents_at<T>(mut iter: iter::Enumerate<io::Lines<T>>,
                              size,
                              line_size,
                              assoc,
-                         })) = parse_line_of_pid(&line?) {
+                         })) = parse_line_of_pid(&line?)
+            {
                 break CPUCache::new(size, line_size, assoc);
             }
         } else {
@@ -137,10 +257,12 @@ pub fn print_cache_contents_at<T>(mut iter: iter::Enumerate<io::Lines<T>>,
         }
         if let Some((_, line_contents)) = parse_line_of_pid(&line?) {
             if let LineContent::LLCacheLineSwap {
-                       new_start,
-                       old_start,
-                       size: _,
-                   } = line_contents {
+                new_start,
+                old_start,
+                size: _,
+                used_bytes: _,
+            } = line_contents
+            {
                 cache.exchange(new_start, old_start);
             }
         };
@@ -150,32 +272,38 @@ pub fn print_cache_contents_at<T>(mut iter: iter::Enumerate<io::Lines<T>>,
 }
 
 #[allow(dead_code)]
-pub fn print_cache_read_overhead<T>(iter: iter::Enumerate<io::Lines<T>>,
-                                    from_line: usize,
-                                    to_line: usize)
-                                    -> Result<(), io::Error>
-    where T: io::BufRead
+pub fn print_cache_read_overhead<T>(
+    iter: iter::Enumerate<io::Lines<T>>,
+    from_line: usize,
+    to_line: usize,
+) -> Result<(), io::Error>
+where
+    T: io::BufRead,
 {
     let mut bytes_read = 0;
     let mut ranges_read = Ranges::new();
     for (_, line) in iter.take(to_line).skip(from_line) {
         if let Some((_, line_contents)) = parse_line_of_pid(&line?) {
             if let LineContent::LLCacheLineSwap {
-                       new_start,
-                       old_start: _,
-                       size,
-                   } = line_contents {
+                new_start,
+                old_start: _,
+                size,
+                used_bytes: _,
+            } = line_contents
+            {
                 bytes_read = bytes_read + size;
-                ranges_read.add(new_start, size);
+                ranges_read.add(new_start, size as u64);
             }
         };
     }
     let ranges_read_size = ranges_read.cumulative_size();
     let overhead = bytes_read as f64 / ranges_read_size as f64;
-    println!("bytes_read: {}, cumulative size of ranges_read: {}, overhead: {}",
-             bytes_read,
-             ranges_read_size,
-             overhead);
+    println!(
+        "bytes_read: {}, cumulative size of ranges_read: {}, overhead: {}",
+        bytes_read,
+        ranges_read_size,
+        overhead
+    );
     Ok(())
 }
 
@@ -189,7 +317,8 @@ fn n_times(n: usize, singular: &str, plural: &str) -> String {
 
 #[allow(dead_code)]
 fn english_concat<T>(singular: &str, plural: &str, v: &Vec<T>) -> String
-    where T: Display
+where
+    T: Display,
 {
     let n = v.len();
     if n == 0 {
@@ -227,42 +356,53 @@ impl ArenaInfoCollector {
     pub fn process_line(&mut self, line_content: &LineContent) {
         match line_content {
             &LineContent::AllocatingArenaChunk {
-                 ident,
-                 chunk_start,
-                 chunk_size,
-             } => {
-                self.arenas
-                    .allocate_chunk(ident, chunk_start, chunk_size);
+                ident,
+                chunk_start,
+                chunk_size,
+            } => {
+                self.arenas.allocate_chunk(ident, chunk_start, chunk_size);
             }
             &LineContent::DeallocatingArenaChunk {
-                 ident,
-                 chunk_start,
-                 chunk_size,
-             } => {
-                self.arenas
-                    .deallocate_chunk(ident, chunk_start, chunk_size);
+                ident,
+                chunk_start,
+                chunk_size,
+            } => {
+                self.arenas.deallocate_chunk(ident, chunk_start, chunk_size);
             }
             &LineContent::Association { ident1, ident2 } => {
                 let type1 = type_from_ident(ident1);
                 let type2 = type_from_ident(ident2);
                 if type1 == "ArenaAllocator" {
-                    self.arenas
-                        .associate_arena_with_thing(ident1, type2, ident2);
+                    self.arenas.associate_arena_with_thing(
+                        ident1,
+                        type2,
+                        ident2,
+                    );
                 } else if type2 == "ArenaAllocator" {
-                    self.arenas
-                        .associate_arena_with_thing(ident2, type1, ident1);
+                    self.arenas.associate_arena_with_thing(
+                        ident2,
+                        type1,
+                        ident1,
+                    );
                 } else {
-                    self.arenas
-                        .associate_thing_with_thing(type1, ident1, type2, ident2);
+                    self.arenas.associate_thing_with_thing(
+                        type1,
+                        ident1,
+                        type2,
+                        ident2,
+                    );
                 }
             }
             &LineContent::ExtraField {
-                 ident,
-                 field_name,
-                 field_content,
-             } => {
-                self.arenas
-                    .set_thing_property(ident, field_name, field_content);
+                ident,
+                field_name,
+                field_content,
+            } => {
+                self.arenas.set_thing_property(
+                    ident,
+                    field_name,
+                    field_content,
+                );
             }
             _ => {}
         }
@@ -296,10 +436,10 @@ impl StackInfoCollector {
                 self.stack_table.add_frame(index, address);
             }
             &LineContent::AddStack {
-                 index,
-                 parent_stack,
-                 frame,
-             } => {
+                index,
+                parent_stack,
+                frame,
+            } => {
                 self.stack_table.add_stack(index, parent_stack, frame);
             }
             &LineContent::SharedLibsChunk(ref json_string_chunk) => {
@@ -314,29 +454,50 @@ impl StackInfoCollector {
             mut stack_table,
             shared_libs_json_string,
         } = self;
-        match SharedLibraries::from_json_string(shared_libs_json_string) {
-            Ok(shared_libraries) => {
-                stack_table.set_libs(shared_libraries);
-            }
-            Err(e) => {
-                println!("error during json parsing: {:?}", e);
+        if shared_libs_json_string.is_empty() {
+            println!("Couldn't find any SharedLibrary information in the log.");
+        } else {
+            match SharedLibraries::from_json_string(shared_libs_json_string) {
+                Ok(shared_libraries) => {
+                    stack_table.set_libs(shared_libraries);
+                }
+                Err(e) => {
+                    println!("error during json parsing: {:?}", e);
+                }
             }
         }
         stack_table
     }
 }
 
-struct AddressReadEvent {
+#[derive(Clone)]
+struct AddressReadOrEvictEvent {
     line_index: usize,
     stack: usize,
 }
 
+#[derive(Clone)]
+struct AddressReadWithPotentialEviction {
+    read: AddressReadOrEvictEvent,
+    eviction: Option<AddressReadOrEvictEvent>,
+}
+
+impl AddressReadWithPotentialEviction {
+    pub fn new(line_index: usize, stack: usize) -> AddressReadWithPotentialEviction {
+        AddressReadWithPotentialEviction {
+            read: AddressReadOrEvictEvent { line_index, stack },
+            eviction: None,
+        }
+    }
+}
+
 struct AddressReads {
-    reads_per_address: HashMap<u64, Vec<AddressReadEvent>>,
+    reads_per_address: HashMap<u64, Vec<AddressReadWithPotentialEviction>>,
 }
 
 fn into_histogram<T>(mut v: Vec<T>) -> Vec<(T, usize)>
-    where T: Ord + Copy
+where
+    T: Ord + Copy,
 {
     if v.is_empty() {
         return Vec::new();
@@ -368,7 +529,15 @@ impl AddressReads {
         self.reads_per_address
             .entry(address)
             .or_insert(Vec::new())
-            .push(AddressReadEvent { line_index, stack });
+            .push(AddressReadWithPotentialEviction::new(line_index, stack));
+    }
+
+    pub fn add_eviction(&mut self, address: u64, line_index: usize, stack: usize) {
+        if let Some(events) = self.reads_per_address.get_mut(&address) {
+            if let Some(last_read) = events.last_mut() {
+                last_read.eviction = Some(AddressReadOrEvictEvent { line_index, stack });
+            }
+        }
     }
 
     pub fn multiple_reads_count(&self) -> usize {
@@ -379,20 +548,58 @@ impl AddressReads {
     }
 
     pub fn histogram(&self) -> (Vec<(usize, usize)>, usize) {
-        let read_counts: Vec<usize> = self.reads_per_address
-            .values()
-            .map(|v| v.len())
-            .collect();
+        let read_counts: Vec<usize> = self.reads_per_address.values().map(|v| v.len()).collect();
         (into_histogram(read_counts), self.reads_per_address.len())
     }
 
     pub fn print_histogram(&self) {
         let (histogram, total_address_count) = self.histogram();
         for (read_count, read_count_count) in histogram {
-            println!("        {} cache-line sized memory ranges were read {} ({:.0}%)",
-                     read_count_count,
-                     n_times(read_count, "time", "times"),
-                     100f32 * read_count_count as f32 / total_address_count as f32);
+            println!(
+                "    {} cache-line sized memory ranges were read {} ({:.0}%)",
+                read_count_count,
+                n_times(read_count, "time", "times"),
+                100f32 * read_count_count as f32 / total_address_count as f32
+            );
+        }
+    }
+
+    pub fn print_top_n_stacks(&self, n: usize, stack_table: &mut StackTable) {
+        let mut reads: Vec<(u64, Vec<AddressReadWithPotentialEviction>)> = self.reads_per_address
+            .iter()
+            .map(|(address, address_read_events)| {
+                (*address, (*address_read_events).clone())
+            })
+            .collect();
+        reads.sort_by(|&(_, ref v1), &(_, ref v2)| v2.len().cmp(&v1.len()));
+        for (addr, reads) in reads.into_iter().take(n) {
+            println!(
+                "      * Read cache line at address 0x{:x} {}:",
+                addr,
+                n_times(reads.len(), "time", "times")
+            );
+            for (i,
+                 AddressReadWithPotentialEviction {
+                     read: AddressReadOrEvictEvent { line_index, stack },
+                     eviction,
+                 }) in reads.into_iter().enumerate()
+            {
+                println!("          {} At line {}:", i + 1, line_index);
+                println!("");
+                stack_table.print_stack(stack, 12);
+                println!("");
+                if let Some(AddressReadOrEvictEvent { line_index, stack }) = eviction {
+                    println!(
+                        "            This cache line was subsequently evicted at line {}:",
+                        line_index
+                    );
+                    println!("");
+                    stack_table.print_stack(stack, 12);
+                    println!("");
+                } else {
+                    println!("            (No eviction)");
+                }
+            }
         }
     }
 }
@@ -406,17 +613,32 @@ impl ArenaAddressReads {
         ArenaAddressReads { address_reads_per_arena_ident: HashMap::new() }
     }
 
-    pub fn add_read(&mut self,
-                    arena_ident: &str,
-                    address: u64,
-                    size: u64,
-                    line_index: usize,
-                    stack: usize) {
+    pub fn add_read(
+        &mut self,
+        arena_ident: &str,
+        address: u64,
+        size: u8,
+        line_index: usize,
+        stack: usize,
+    ) {
         let arena = self.address_reads_per_arena_ident
             .entry(arena_ident.to_owned())
             .or_insert((AddressReads::new(), 0u64));
         arena.0.add_read(address, line_index, stack);
-        arena.1 += size;
+        arena.1 += size as u64;
+    }
+
+    pub fn add_eviction(
+        &mut self,
+        arena_ident: &str,
+        address: u64,
+        line_index: usize,
+        stack: usize,
+    ) {
+        let arena = self.address_reads_per_arena_ident
+            .entry(arena_ident.to_owned())
+            .or_insert((AddressReads::new(), 0u64));
+        arena.0.add_eviction(address, line_index, stack);
     }
 
     pub fn into_arenas_sorted_by_most_bytes_read(self) -> Vec<(String, (AddressReads, u64))> {
@@ -428,16 +650,18 @@ impl ArenaAddressReads {
 }
 
 #[allow(dead_code)]
-pub fn print_multiple_read_ranges<T>(iter: iter::Enumerate<io::Lines<T>>,
-                                     from_line: usize,
-                                     to_line: usize)
-                                     -> Result<(), io::Error>
-    where T: io::BufRead
+pub fn print_multiple_read_ranges<T>(
+    iter: iter::Enumerate<io::Lines<T>>,
+    from_line: usize,
+    to_line: usize,
+) -> Result<(), io::Error>
+where
+    T: io::BufRead,
 {
     let mut stack_info = StackInfoCollector::new();
     let mut arena_info = ArenaInfoCollector::new();
     let mut address_reads = AddressReads::new();
-    let mut pending_cache_line_swaps: Vec<(u64, u64, usize)> = Vec::new();
+    let mut pending_cache_line_swaps: Vec<(u64, u64, u8, usize)> = Vec::new();
 
     let mut outside_arena_reads = AddressReads::new();
     let mut arena_reads = ArenaAddressReads::new();
@@ -453,34 +677,63 @@ pub fn print_multiple_read_ranges<T>(iter: iter::Enumerate<io::Lines<T>>,
                 match line_contents {
                     LineContent::LLCacheLineSwap {
                         new_start,
-                        old_start: _,
+                        old_start,
                         size,
+                        used_bytes: _,
                     } => {
-                        pending_cache_line_swaps.push((new_start, size, line_index));
+                        pending_cache_line_swaps.push((new_start, old_start, size, line_index));
                     }
                     LineContent::StackForLLMiss(stack_index) => {
-                        for (cache_miss_addr, size, cache_miss_line_index) in
-                            pending_cache_line_swaps.drain(..) {
-                            address_reads.add_read(cache_miss_addr,
-                                                   cache_miss_line_index,
-                                                   stack_index);
+                        for (cache_miss_addr, evicted_addr, size, cache_miss_line_index) in
+                            pending_cache_line_swaps.drain(..)
+                        {
+                            address_reads.add_eviction(
+                                evicted_addr,
+                                cache_miss_line_index,
+                                stack_index,
+                            );
+                            address_reads.add_read(
+                                cache_miss_addr,
+                                cache_miss_line_index,
+                                stack_index,
+                            );
 
                             if let Some(arena_ident) =
-                                arena_info
-                                    .arenas()
-                                    .arena_covering_address(cache_miss_addr) {
-                                arena_reads.add_read(&arena_ident,
-                                                     cache_miss_addr,
-                                                     size,
-                                                     cache_miss_line_index,
-                                                     stack_index);
+                                arena_info.arenas().arena_covering_address(cache_miss_addr)
+                            {
+                                arena_reads.add_read(
+                                    &arena_ident,
+                                    cache_miss_addr,
+                                    size,
+                                    cache_miss_line_index,
+                                    stack_index,
+                                );
                             } else {
-                                outside_arena_reads.add_read(cache_miss_addr,
-                                                             cache_miss_line_index,
-                                                             stack_index);
-                                bytes_read_outside_arena += size;
+                                outside_arena_reads.add_read(
+                                    cache_miss_addr,
+                                    cache_miss_line_index,
+                                    stack_index,
+                                );
+                                bytes_read_outside_arena += size as u64;
                             }
-                            total_bytes_read += size;
+                            total_bytes_read += size as u64;
+
+                            if let Some(evicted_arena_ident) =
+                                arena_info.arenas().arena_covering_address(evicted_addr)
+                            {
+                                arena_reads.add_eviction(
+                                    &evicted_arena_ident,
+                                    evicted_addr,
+                                    cache_miss_line_index,
+                                    stack_index,
+                                );
+                            } else {
+                                outside_arena_reads.add_eviction(
+                                    evicted_addr,
+                                    cache_miss_line_index,
+                                    stack_index,
+                                );
+                            }
                         }
                     }
                     _ => {}
@@ -491,8 +744,10 @@ pub fn print_multiple_read_ranges<T>(iter: iter::Enumerate<io::Lines<T>>,
 
     let mut stack_table = stack_info.get_stack_table();
 
-    println!("Read {} cache-line sized memory ranges at least twice.",
-             address_reads.multiple_reads_count());
+    println!(
+        "Read {} cache-line sized memory ranges at least twice.",
+        address_reads.multiple_reads_count()
+    );
     address_reads.print_histogram();
     println!("");
 
@@ -512,20 +767,39 @@ pub fn print_multiple_read_ranges<T>(iter: iter::Enumerate<io::Lines<T>>,
     //     }
     // }
 
-    println!("Read {} ({:.0}%) bytes outside any arena.",
-             bytes_read_outside_arena,
-             100f64 * bytes_read_outside_arena as f64 / total_bytes_read as f64);
+    println!(
+        "Read {} ({:.0}%) bytes outside any arena.",
+        bytes_read_outside_arena,
+        100f64 * bytes_read_outside_arena as f64 / total_bytes_read as f64
+    );
     outside_arena_reads.print_histogram();
+    println!("");
+    println!(
+        "    Here are the top 5 cache-line sized memory ranges from outside any arena, with their reads + evictions:"
+    );
+    outside_arena_reads.print_top_n_stacks(5, &mut stack_table);
+    println!("");
+    println!("");
 
     let arenas_read = arena_reads.into_arenas_sorted_by_most_bytes_read();
     let mut arenas = arena_info.into_arenas();
     for (arena, (arena_address_reads, bytes)) in arenas_read.into_iter() {
-        println!("Read {} bytes ({:.0}%) from arena {}:",
-                 bytes,
-                 100f64 * bytes as f64 / total_bytes_read as f64,
-                 &arena);
+        println!(
+            "Read {} bytes ({:.0}%) from arena {}:",
+            bytes,
+            100f64 * bytes as f64 / total_bytes_read as f64,
+            &arena
+        );
         println!("    {}", arenas.arena_description(&arena));
+        println!("");
         arena_address_reads.print_histogram();
+        println!("");
+        println!(
+            "    Here are the top 5 cache-line sized memory ranges in this arena, with their reads + evictions:"
+        );
+        arena_address_reads.print_top_n_stacks(5, &mut stack_table);
+        println!("");
+        println!("");
     }
 
     Ok(())
