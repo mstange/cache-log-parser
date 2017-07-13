@@ -2,13 +2,17 @@ pub struct Ranges {
     r: Vec<(u64, u64)>,
 }
 
-fn bisection<S, T, F>(v: &Vec<S>, f: F, x: T) -> usize
+/// Returns the lowest i such that f(v[i]) > x,
+// or v.len() if there is no such i.
+/// v needs to be sorted in ascending order,
+///   f(v[i]) < f(v[j]) for all i < j
+fn bisection<S, T, F>(v: &[S], f: F, x: T) -> usize
     where F: Fn(&S) -> T,
           T: Ord
 {
     match v.binary_search_by_key(&x, f) {
-        Ok(index) => index,
-        Err(index) => index
+        Ok(index) => index + 1,
+        Err(index) => index,
     }
 }
 
@@ -75,11 +79,11 @@ impl Ranges {
             }
             let mut prev_end = first_end;
             for &(start, end) in self.r.iter().skip(1) {
-                // if !(prev_end < start) {
-                //     panic!("start is not strictly larger than prev_end! {}, {}",
-                //            prev_end,
-                //            start);
-                // }
+                if !(prev_end < start) {
+                    panic!("start is not strictly larger than prev_end! {}, {}",
+                           prev_end,
+                           start);
+                }
                 if !(start < end) {
                     panic!("end is not strictly larger than start! {}, {}", start, end);
                 }
@@ -147,4 +151,84 @@ impl Ranges {
         let (start, end) = self.r[range_index];
         start <= value && value < end
     }
+}
+
+#[test]
+fn test_bisect() {
+    assert_eq!(bisection(&[0, 10, 20], |x| *x, 5), 1);
+    assert_eq!(bisection(&[0, 10, 20], |x| *x, 10), 2);
+    assert_eq!(bisection(&[0, 10, 20], |x| *x, 0), 1);
+    assert_eq!(bisection(&[0, 10, 20], |x| *x, -5), 0);
+}
+
+#[test]
+fn test_ranges() {
+    let mut ranges = Ranges::new();
+    ranges.add(10, 10);
+    ranges.add(20, 10);
+    assert_eq!(ranges.get(), [(10, 30)]);
+
+    let mut ranges = Ranges::new();
+    ranges.add(10, 10);
+    ranges.add(30, 10);
+    ranges.add(20, 10);
+    assert_eq!(ranges.get(), [(10, 40)]);
+
+    let mut ranges = Ranges::new();
+    ranges.add(30, 10);
+    ranges.add(10, 10);
+    ranges.add(20, 10);
+    assert_eq!(ranges.get(), [(10, 40)]);
+
+    let mut ranges = Ranges::new();
+    ranges.add(30, 10);
+    ranges.add(10, 10);
+    ranges.add(15, 20);
+    assert_eq!(ranges.get(), [(10, 40)]);
+
+    let mut ranges = Ranges::new();
+    ranges.add(30, 10);
+    ranges.add(10, 10);
+    ranges.add(15, 20);
+    assert_eq!(ranges.get(), [(10, 40)]);
+
+    let mut ranges = Ranges::new();
+    ranges.add(10, 30);
+    assert_eq!(ranges.get(), [(10, 40)]);
+    ranges.remove(20, 10);
+    assert_eq!(ranges.get(), [(10, 20), (30, 40)]);
+    ranges.add(20, 10);
+    assert_eq!(ranges.get(), [(10, 40)]);
+    ranges.add(50, 10);
+    assert_eq!(ranges.get(), [(10, 40), (50, 60)]);
+    ranges.remove(0, 15);
+    assert_eq!(ranges.get(), [(15, 40), (50, 60)]);
+    ranges.remove(55, 2);
+    assert_eq!(ranges.get(), [(15, 40), (50, 55), (57, 60)]);
+    ranges.remove(53, 2);
+    assert_eq!(ranges.get(), [(15, 40), (50, 53), (57, 60)]);
+    ranges.add(50, 5);
+    assert_eq!(ranges.get(), [(15, 40), (50, 55), (57, 60)]);
+    ranges.remove(56, 20);
+    assert_eq!(ranges.get(), [(15, 40), (50, 55)]);
+    ranges.add(55, 5);
+    assert_eq!(ranges.get(), [(15, 40), (50, 60)]);
+    ranges.remove(40, 10);
+    assert_eq!(ranges.get(), [(15, 40), (50, 60)]);
+    ranges.remove(39, 10);
+    assert_eq!(ranges.get(), [(15, 39), (50, 60)]);
+    ranges.remove(38, 1);
+    assert_eq!(ranges.get(), [(15, 38), (50, 60)]);
+    ranges.remove(0, 17);
+    assert_eq!(ranges.get(), [(17, 38), (50, 60)]);
+    ranges.remove(18, 40);
+    assert_eq!(ranges.get(), [(17, 18), (58, 60)]);
+    ranges.add(19, 5);
+    assert_eq!(ranges.get(), [(17, 18), (19, 24), (58, 60)]);
+    ranges.add(27, 5);
+    assert_eq!(ranges.get(), [(17, 18), (19, 24), (27, 32), (58, 60)]);
+    ranges.add(38, 10);
+    assert_eq!(ranges.get(), [(17, 18), (19, 24), (27, 32), (38, 48), (58, 60)]);
+    ranges.remove(18, 41);
+    assert_eq!(ranges.get(), [(17, 18), (59, 60)]);
 }
