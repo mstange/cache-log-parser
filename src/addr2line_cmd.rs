@@ -5,7 +5,7 @@ use std::str::FromStr;
 use std::str;
 use itertools::Itertools;
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub struct StackFrameInfo {
     pub function_name: String,
     pub file_path_str: String,

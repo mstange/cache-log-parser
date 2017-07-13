@@ -1,6 +1,6 @@
 use std::io;
 use std::iter;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use cache_log_parsing::{parse_line_of_pid, LineContent};
 use ranges::Ranges;
@@ -11,17 +11,79 @@ use arenas::Arenas;
 use profile::ProfileBuilder;
 use rand::{self, Rng};
 
+#[derive(Debug)]
+struct PIDs {
+    pids: Vec<(i32, usize)>,
+}
+
+impl PIDs {
+    pub fn increment(&mut self, pid: i32) {
+        for &mut (pid_, ref mut line_count) in self.pids.iter_mut() {
+            if pid_ == pid {
+                *line_count += 1;
+                return;
+            }
+        }
+        self.pids.push((pid, 1));
+    }
+}
+
 #[allow(dead_code)]
-pub fn print_display_list_info<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io::Error>
+pub fn print_process_info<T>(iter: T) -> Result<(), io::Error>
 where
-    T: io::BufRead,
+    T: iter::Iterator<Item = (usize, String)>,
+{
+    let mut pids = PIDs { pids: Vec::new() };
+    for (line_index, line) in iter {
+        if let Some((pid, line_contents)) = parse_line_of_pid(&line) {
+            pids.increment(pid);
+        }
+    }
+    let mut pid_iter = pids.pids.into_iter();
+    if let Some((parent_process_pid, line_count)) = pid_iter.next() {
+        println!(
+            "Parent process: {} ({} log lines)",
+            parent_process_pid,
+            line_count
+        );
+        let mut remaining_pids: Vec<(i32, usize)> = pid_iter.collect();
+        remaining_pids.sort_by(|&(_, ref a), &(_, b)| b.cmp(a));
+        let mut pid_iter = remaining_pids.into_iter().peekable();
+        if let Some((primary_content_process, line_count)) = pid_iter.next() {
+            println!(
+                "Primary content process: {} ({} log lines)",
+                primary_content_process,
+                line_count
+            );
+            if let Some(_) = pid_iter.peek() {
+                println!("Other child processes:");
+                for (other_pid, line_count) in pid_iter {
+                    println!(" - {} ({} log lines)", other_pid, line_count);
+                }
+            }
+        } else {
+            println!("No child process found.");
+        }
+    } else {
+        println!("Did not find any processes in the log.");
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub fn print_display_list_info<T>(pid: i32, iter: T) -> Result<(), io::Error>
+where
+    T: iter::Iterator<Item = (usize, String)>,
 {
     let mut bytes_read = 0;
     let mut ranges_read = Ranges::new();
     let mut dl_begin = 0;
     let mut in_display_list = false;
     for (line_index, line) in iter {
-        if let Some((_, line_contents)) = parse_line_of_pid(&line?) {
+        if let Some((p, line_contents)) = parse_line_of_pid(&line) {
+            if p != pid {
+                continue;
+            }
             match line_contents {
                 LineContent::BeginDisplayList => {
                     dl_begin = line_index;
@@ -77,19 +139,23 @@ struct CacheLineRead {
 
 #[allow(dead_code)]
 pub fn print_cache_line_wastage<T>(
-    iter: iter::Enumerate<io::Lines<T>>,
+    pid: i32,
+    iter: T,
     from_line: usize,
     to_line: usize,
 ) -> Result<(), io::Error>
 where
-    T: io::BufRead,
+    T: iter::Iterator<Item = (usize, String)>,
 {
     let mut stack_info = StackInfoCollector::new();
     let mut reads: Vec<CacheLineRead> = Vec::new();
     let mut reads_with_pending_used_bytes: HashMap<u64, usize> = HashMap::new();
     let mut reads_with_pending_stacks: Vec<usize> = Vec::new();
     for (line_index, line) in iter {
-        if let Some((_, line_contents)) = parse_line_of_pid(&line?) {
+        if let Some((p, line_contents)) = parse_line_of_pid(&line) {
+            if p != pid {
+                continue;
+            }
             if line_index < to_line {
                 stack_info.process_line(&line_contents);
             }
@@ -140,42 +206,83 @@ where
     let bytes_per_ms: u32 = 1024;
     let bytes_per_sample: u32 = 256;
 
-    let mut profile_builder = ProfileBuilder::new(
-        stack_info.get_stack_table(),
+    let stack_table = stack_info.get_stack_table();
+
+    let mut read_bytes_profile_builder = ProfileBuilder::new(
+        stack_table.clone(),
+        bytes_per_sample as f64 / bytes_per_ms as f64,
+    );
+
+    let mut used_bytes_profile_builder = ProfileBuilder::new(
+        stack_table.clone(),
+        bytes_per_sample as f64 / bytes_per_ms as f64,
+    );
+
+    let mut wasted_bytes_profile_builder = ProfileBuilder::new(
+        stack_table.clone(),
         bytes_per_sample as f64 / bytes_per_ms as f64,
     );
 
     let mut rng = rand::weak_rng();
+    let mut read_bytes_cumulative = 0;
+    let mut used_bytes_cumulative = 0;
     let mut wasted_bytes_cumulative = 0;
     for CacheLineRead {
         line_index: _,
         address: _,
-        size,
+        size: read_bytes,
         used_bytes,
         stack,
     } in reads.into_iter()
     {
         if let (Some(used_bytes), Some(stack)) = (used_bytes, stack) {
-            let wasted_bytes = size - used_bytes;
-            if rng.next_u32() % bytes_per_sample < wasted_bytes as u32 {
-                profile_builder.add_sample(stack, wasted_bytes_cumulative as f64 / bytes_per_ms as f64);
+            let wasted_bytes = read_bytes - used_bytes;
+
+            if rng.next_u32() % bytes_per_sample < read_bytes as u32 {
+                read_bytes_profile_builder.add_sample(
+                    stack,
+                    read_bytes_cumulative as f64 /
+                        bytes_per_ms as f64,
+                );
             }
+            if rng.next_u32() % bytes_per_sample < used_bytes as u32 {
+                used_bytes_profile_builder.add_sample(
+                    stack,
+                    used_bytes_cumulative as f64 /
+                        bytes_per_ms as f64,
+                );
+            }
+            if rng.next_u32() % bytes_per_sample < wasted_bytes as u32 {
+                wasted_bytes_profile_builder.add_sample(
+                    stack,
+                    wasted_bytes_cumulative as f64 /
+                        bytes_per_ms as f64,
+                );
+            }
+            read_bytes_cumulative += read_bytes as u64;
+            used_bytes_cumulative += used_bytes as u64;
             wasted_bytes_cumulative += wasted_bytes as u64;
         }
     }
-    profile_builder
-        .save_to_file("/home/mstange/Desktop/profile.sps.json")
+    read_bytes_profile_builder
+        .save_to_file("/home/mstange/Desktop/read_bytes_profile.sps.json")
+        .expect("JSON file writing went wrong");
+    used_bytes_profile_builder
+        .save_to_file("/home/mstange/Desktop/used_bytes_profile.sps.json")
+        .expect("JSON file writing went wrong");
+    wasted_bytes_profile_builder
+        .save_to_file("/home/mstange/Desktop/wasted_bytes_profile.sps.json")
         .expect("JSON file writing went wrong");
     Ok(())
 }
 
 #[allow(dead_code)]
-pub fn print_extra_field_info<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io::Error>
+pub fn print_extra_field_info<T>(iter: T) -> Result<(), io::Error>
 where
-    T: io::BufRead,
+    T: iter::Iterator<Item = (usize, String)>,
 {
     for (_, line) in iter {
-        if let Some((_, line_contents)) = parse_line_of_pid(&line?) {
+        if let Some((_, line_contents)) = parse_line_of_pid(&line) {
             if let LineContent::ExtraField {
                 ident,
                 field_name,
@@ -190,37 +297,61 @@ where
 }
 
 #[allow(dead_code)]
-pub fn print_other_lines<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io::Error>
+pub fn print_other_lines<T>(iter: T) -> Result<(), io::Error>
 where
-    T: io::BufRead,
+    T: iter::Iterator<Item = (usize, String)>,
 {
     for (line_index, line) in iter {
-        if let Some((_, line_contents)) = parse_line_of_pid(&line?) {
+        if let Some((_, line_contents)) = parse_line_of_pid(&line) {
             if let LineContent::Other(s) = line_contents {
                 println!("{}: {}", line_index, s);
             }
-        };
+        }
     }
     Ok(())
 }
 
 #[allow(dead_code)]
-pub fn print_fork_lines<T>(iter: iter::Enumerate<io::Lines<T>>) -> Result<(), io::Error>
+pub fn print_fork_lines<T>(pid: i32, iter: T) -> Result<(), io::Error>
 where
-    T: io::BufRead,
+    T: iter::Iterator<Item = (usize, String)>,
 {
     let mut last_frame_index = -1;
+    let mut last_stack_index = -1;
     for (line_index, line) in iter {
-        if let Some((_, line_contents)) = parse_line_of_pid(&line?) {
+        if let Some((p, line_contents)) = parse_line_of_pid(&line) {
+            if p != pid {
+                continue;
+            }
             if let LineContent::AddFrame {
                 index: frame_index,
                 address: _,
             } = line_contents
             {
                 if frame_index as i32 <= last_frame_index {
-                    println!("something forked at or before line {}", line_index)
+                    println!(
+                        "something forked at or before line {} (last frame index: {}, new frame index: {})",
+                        line_index,
+                        last_frame_index,
+                        frame_index
+                    )
                 }
                 last_frame_index = frame_index as i32;
+            } else if let LineContent::AddStack {
+                       index: stack_index,
+                       parent_stack: _,
+                       frame: _,
+                   } = line_contents
+            {
+                if stack_index as i32 <= last_stack_index {
+                    println!(
+                        "something forked at or before line {} (last stack index: {}, new stack index: {})",
+                        line_index,
+                        last_stack_index,
+                        stack_index
+                    )
+                }
+                last_stack_index = stack_index as i32;
             }
         };
     }
@@ -228,12 +359,9 @@ where
 }
 
 #[allow(dead_code)]
-pub fn print_cache_contents_at<T>(
-    mut iter: iter::Enumerate<io::Lines<T>>,
-    at_line_index: usize,
-) -> Result<(), io::Error>
+pub fn print_cache_contents_at<T>(mut iter: T, at_line_index: usize) -> Result<(), io::Error>
 where
-    T: io::BufRead,
+    T: iter::Iterator<Item = (usize, String)>,
 {
     let mut cache = loop {
         if let Some((_, line)) = iter.next() {
@@ -242,7 +370,7 @@ where
                              size,
                              line_size,
                              assoc,
-                         })) = parse_line_of_pid(&line?)
+                         })) = parse_line_of_pid(&line)
             {
                 break CPUCache::new(size, line_size, assoc);
             }
@@ -255,7 +383,7 @@ where
         if line_index >= at_line_index {
             break;
         }
-        if let Some((_, line_contents)) = parse_line_of_pid(&line?) {
+        if let Some((_, line_contents)) = parse_line_of_pid(&line) {
             if let LineContent::LLCacheLineSwap {
                 new_start,
                 old_start,
@@ -273,17 +401,17 @@ where
 
 #[allow(dead_code)]
 pub fn print_cache_read_overhead<T>(
-    iter: iter::Enumerate<io::Lines<T>>,
+    iter: T,
     from_line: usize,
     to_line: usize,
 ) -> Result<(), io::Error>
 where
-    T: io::BufRead,
+    T: iter::Iterator<Item = (usize, String)>,
 {
     let mut bytes_read = 0;
     let mut ranges_read = Ranges::new();
     for (_, line) in iter.take(to_line).skip(from_line) {
-        if let Some((_, line_contents)) = parse_line_of_pid(&line?) {
+        if let Some((_, line_contents)) = parse_line_of_pid(&line) {
             if let LineContent::LLCacheLineSwap {
                 new_start,
                 old_start: _,
@@ -420,6 +548,8 @@ impl ArenaInfoCollector {
 struct StackInfoCollector {
     stack_table: StackTable,
     shared_libs_json_string: String,
+    last_frame: usize,
+    last_stack: usize,
 }
 
 impl StackInfoCollector {
@@ -427,20 +557,32 @@ impl StackInfoCollector {
         StackInfoCollector {
             stack_table: StackTable::new(),
             shared_libs_json_string: String::new(),
+            last_frame: 0,
+            last_stack: 0,
         }
     }
 
     pub fn process_line(&mut self, line_content: &LineContent) {
         match line_content {
             &LineContent::AddFrame { index, address } => {
-                self.stack_table.add_frame(index, address);
+                if self.last_frame == 0 || index != 0 {
+                    self.stack_table.add_frame(index, address);
+                    self.last_frame = index;
+                }
             }
             &LineContent::AddStack {
                 index,
                 parent_stack,
                 frame,
             } => {
-                self.stack_table.add_stack(index, parent_stack, frame);
+                println!("AddStack: {:?}", line_content);
+                if self.last_stack == 0 || index != 0 {
+                    if index == 0 {
+                        println!("adding stack with index 0, last_stack is {}", self.last_stack);
+                    }
+                    self.stack_table.add_stack(index, parent_stack, frame);
+                    self.last_stack = index;
+                }
             }
             &LineContent::SharedLibsChunk(ref json_string_chunk) => {
                 self.shared_libs_json_string.push_str(json_string_chunk);
@@ -453,6 +595,8 @@ impl StackInfoCollector {
         let StackInfoCollector {
             mut stack_table,
             shared_libs_json_string,
+            last_frame: _,
+            last_stack: _,
         } = self;
         if shared_libs_json_string.is_empty() {
             println!("Couldn't find any SharedLibrary information in the log.");
@@ -651,12 +795,12 @@ impl ArenaAddressReads {
 
 #[allow(dead_code)]
 pub fn print_multiple_read_ranges<T>(
-    iter: iter::Enumerate<io::Lines<T>>,
+    iter: T,
     from_line: usize,
     to_line: usize,
 ) -> Result<(), io::Error>
 where
-    T: io::BufRead,
+    T: iter::Iterator<Item = (usize, String)>,
 {
     let mut stack_info = StackInfoCollector::new();
     let mut arena_info = ArenaInfoCollector::new();
@@ -670,7 +814,7 @@ where
 
     for (line_index, line) in iter.take(to_line) {
 
-        if let Some((_, line_contents)) = parse_line_of_pid(&line?) {
+        if let Some((_, line_contents)) = parse_line_of_pid(&line) {
             stack_info.process_line(&line_contents);
             arena_info.process_line(&line_contents);
             if line_index >= from_line {

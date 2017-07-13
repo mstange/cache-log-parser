@@ -75,6 +75,7 @@ impl<'b> StackTableConverter<'b> {
     }
 }
 
+#[derive(Clone)]
 pub struct StackTable {
     pub frames: Vec<(u64, Option<Vec<StackFrameInfo>>)>,
     pub stacks: Vec<StackEntry>,
