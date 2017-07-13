@@ -14,6 +14,7 @@ extern crate serde_derive;
 extern crate clap;
 extern crate rand;
 extern crate itertools;
+extern crate pretty_bytes;
 
 mod cache_log_parsing;
 mod shared_libraries;
@@ -51,7 +52,7 @@ fn main() {
     );
     let result = 
     // print_process_info(iter);
-    // print_display_list_info(21479, iter);
+    print_display_list_info(21479, iter);
     // print_cache_contents_at(iter, 67317106)?;
     // print_cache_contents_at(iter, cache, 58256278)?;
     // print_extra_field_info(iter).expect("someting wong");
@@ -59,6 +60,6 @@ fn main() {
     // print_fork_lines(21479, iter);
     // print_cache_read_overhead(iter, 67317106, 67500260)?;
     // print_multiple_read_ranges(iter, 112906438, 113242142);
-    print_cache_line_wastage(21479, iter, 173745068, 174325285);
+    // print_cache_line_wastage(21479, iter, 173745068, 174325285);
     println!("result: {:?}", result);
 }

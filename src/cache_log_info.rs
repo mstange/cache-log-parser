@@ -2,6 +2,7 @@ use std::io;
 use std::iter;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
+use std::mem;
 use cache_log_parsing::{parse_line_of_pid, LineContent};
 use ranges::Ranges;
 use cpucache::CPUCache;
@@ -10,6 +11,7 @@ use shared_libraries::SharedLibraries;
 use arenas::Arenas;
 use profile::ProfileBuilder;
 use rand::{self, Rng};
+use pretty_bytes::converter::convert;
 
 #[derive(Debug)]
 struct PIDs {
@@ -34,8 +36,8 @@ where
     T: iter::Iterator<Item = (usize, String)>,
 {
     let mut pids = PIDs { pids: Vec::new() };
-    for (line_index, line) in iter {
-        if let Some((pid, line_contents)) = parse_line_of_pid(&line) {
+    for (_, line) in iter {
+        if let Some((pid, _)) = parse_line_of_pid(&line) {
             pids.increment(pid);
         }
     }
@@ -70,15 +72,105 @@ where
     Ok(())
 }
 
+struct DisplayListBuildingSection {
+    start_line_index: usize,
+    end_line_index: Option<usize>,
+    reads_info: ReadsCollector,
+}
+
+impl DisplayListBuildingSection {
+    pub fn new(start_line_index: usize) -> DisplayListBuildingSection {
+        DisplayListBuildingSection {
+            start_line_index,
+            end_line_index: None,
+            reads_info: ReadsCollector::new(),
+        }
+    }
+
+    pub fn needs_more_lines(&self) -> bool {
+        self.reads_info.needs_more_lines()
+    }
+
+    pub fn process_line(&mut self, line_index: usize, line_contents: &LineContent) {
+        assert!(line_index >= self.start_line_index);
+        self.reads_info.process_line(
+            line_index,
+            self.end_line_index == None,
+            line_contents,
+        );
+    }
+
+    pub fn found_section_end(&mut self, line_index: usize) {
+        self.end_line_index = Some(line_index);
+    }
+
+    pub fn print_info(self) {
+        let mut bytes_read: u64 = 0;
+        let mut bytes_used: u64 = 0;
+        let mut ranges_read = Ranges::new();
+
+        for CacheLineRead {
+            line_index: _,
+            address,
+            size,
+            used_bytes,
+            stack: _,
+        } in self.reads_info.into_reads()
+        {
+            bytes_read += size as u64;
+            bytes_used += used_bytes.unwrap_or(size) as u64;
+            ranges_read.add(address, size as u64);
+        }
+
+        println!("  - DisplayList section which read {}", convert(bytes_read as f64));
+        if let Some(end_line_index) = self.end_line_index {
+            println!(
+                "      - frome line {} to line {} ({} lines total)",
+                self.start_line_index,
+                end_line_index,
+                (end_line_index - self.start_line_index)
+            );
+        } else {
+            println!(
+                "      - starting at line {}, unfinished",
+                self.start_line_index
+            );
+        }
+
+        let ranges_read_size = ranges_read.cumulative_size();
+        let multi_read_overhead = (bytes_read as f64 / ranges_read_size as f64 - 1.0) * 100.0;
+        let cache_line_overhead = (bytes_read as f64 / bytes_used as f64 - 1.0) * 100.0;
+        println!(
+            "      - read {} bytes from memory into the LL cache in total",
+            bytes_read,
+        );
+        println!(
+            "      - read {} bytes of unique address ranges into the cache",
+            ranges_read_size,
+        );
+        println!(
+            "         => {:.0}% overhead due to memory ranges that were read more than once",
+            multi_read_overhead
+        );
+        println!(
+            "      - accessed {} bytes",
+            bytes_used,
+        );
+        println!(
+            "         => {:.0}% overhead from unused parts of cache lines",
+            cache_line_overhead
+        );
+        println!("");
+    }
+}
+
 #[allow(dead_code)]
 pub fn print_display_list_info<T>(pid: i32, iter: T) -> Result<(), io::Error>
 where
     T: iter::Iterator<Item = (usize, String)>,
 {
-    let mut bytes_read = 0;
-    let mut ranges_read = Ranges::new();
-    let mut dl_begin = 0;
-    let mut in_display_list = false;
+    let mut pending_dlb_sections: Vec<DisplayListBuildingSection> = Vec::new();
+    let mut current_dlb_section: Option<DisplayListBuildingSection> = None;
     for (line_index, line) in iter {
         if let Some((p, line_contents)) = parse_line_of_pid(&line) {
             if p != pid {
@@ -86,44 +178,42 @@ where
             }
             match line_contents {
                 LineContent::BeginDisplayList => {
-                    dl_begin = line_index;
-                    in_display_list = true;
+                    current_dlb_section = Some(DisplayListBuildingSection::new(line_index));
                 }
                 LineContent::EndDisplayList => {
-                    println!(
-                        "DisplayList for {} lines from {} to {}",
-                        (line_index - dl_begin),
-                        dl_begin,
-                        line_index
-                    );
-                    let ranges_read_size = ranges_read.cumulative_size();
-                    let overhead = bytes_read as f64 / ranges_read_size as f64;
-                    println!(
-                        "bytes_read: {}, cumulative size of ranges_read: {}, overhead: {}",
-                        bytes_read,
-                        ranges_read_size,
-                        overhead
-                    );
-                    in_display_list = false;
-                    bytes_read = 0;
-                    ranges_read = Ranges::new();
+                    current_dlb_section
+                        .as_mut()
+                        .expect("Unbalanced End DisplayList")
+                        .found_section_end(line_index);
+                    pending_dlb_sections.push(current_dlb_section.take().unwrap());
                 }
                 line_contents => {
-                    if in_display_list {
-                        if let LineContent::LLCacheLineSwap {
-                            new_start,
-                            old_start: _,
-                            size,
-                            used_bytes: _,
-                        } = line_contents
-                        {
-                            bytes_read = bytes_read + size;
-                            ranges_read.add(new_start, size as u64);
-                        }
+                    if let Some(current_dlb_section) = current_dlb_section.as_mut() {
+                        current_dlb_section.process_line(line_index, &line_contents);
                     }
+                    pending_dlb_sections = pending_dlb_sections
+                        .into_iter()
+                        .flat_map(|mut section| {
+                            section.process_line(line_index, &line_contents);
+                            if section.needs_more_lines() {
+                                return Some(section);
+                            }
+
+                            section.print_info();
+                            None
+                        })
+                        .collect();
                 }
             }
         };
+    }
+    if !pending_dlb_sections.is_empty() {
+        println!(
+            "Have sections for which I don't know all the bytes_used information. Going to assume that the full cache line was used."
+        );
+        for section in pending_dlb_sections.into_iter() {
+            section.print_info();
+        }
     }
     Ok(())
 }
@@ -137,6 +227,72 @@ struct CacheLineRead {
     stack: Option<usize>,
 }
 
+struct ReadsCollector {
+    reads: Vec<CacheLineRead>,
+    reads_with_pending_used_bytes: HashMap<u64, usize>,
+    reads_with_pending_stacks: Vec<usize>,
+}
+
+impl ReadsCollector {
+    pub fn new() -> ReadsCollector {
+        ReadsCollector {
+            reads: Vec::new(),
+            reads_with_pending_used_bytes: HashMap::new(),
+            reads_with_pending_stacks: Vec::new(),
+        }
+    }
+
+    pub fn needs_more_lines(&self) -> bool {
+        !self.reads_with_pending_used_bytes.is_empty() || !self.reads_with_pending_stacks.is_empty()
+    }
+
+    pub fn into_reads(self) -> Vec<CacheLineRead> {
+        self.reads
+    }
+
+    pub fn process_line(
+        &mut self,
+        line_index: usize,
+        within_interesting_section: bool,
+        line_contents: &LineContent,
+    ) {
+        match line_contents {
+            &LineContent::LLCacheLineSwap {
+                new_start,
+                old_start,
+                size,
+                used_bytes,
+            } => {
+                if let Some(read_index) = self.reads_with_pending_used_bytes.remove(&old_start) {
+                    // println!("assigning used_bytes {:?} to address read at address {:x}.", used_bytes, old_start);
+                    self.reads[read_index].used_bytes = used_bytes;
+                }
+                if within_interesting_section {
+                    let next_read_index = self.reads.len();
+                    self.reads_with_pending_used_bytes.insert(
+                        new_start,
+                        next_read_index,
+                    );
+                    self.reads_with_pending_stacks.push(next_read_index);
+                    self.reads.push(CacheLineRead {
+                        line_index,
+                        address: new_start,
+                        size,
+                        used_bytes: None,
+                        stack: None,
+                    });
+                }
+            }
+            &LineContent::StackForLLMiss(stack) => {
+                for read_index in self.reads_with_pending_stacks.drain(..) {
+                    self.reads[read_index].stack = Some(stack);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub fn print_cache_line_wastage<T>(
     pid: i32,
@@ -148,9 +304,7 @@ where
     T: iter::Iterator<Item = (usize, String)>,
 {
     let mut stack_info = StackInfoCollector::new();
-    let mut reads: Vec<CacheLineRead> = Vec::new();
-    let mut reads_with_pending_used_bytes: HashMap<u64, usize> = HashMap::new();
-    let mut reads_with_pending_stacks: Vec<usize> = Vec::new();
+    let mut reads_info = ReadsCollector::new();
     for (line_index, line) in iter {
         if let Some((p, line_contents)) = parse_line_of_pid(&line) {
             if p != pid {
@@ -158,45 +312,16 @@ where
             }
             if line_index < to_line {
                 stack_info.process_line(&line_contents);
+            } else if !reads_info.needs_more_lines() {
+                break;
             }
-            if line_index < from_line {
-                continue;
+            if line_index >= from_line {
+                reads_info.process_line(line_index, line_index < to_line, &line_contents);
             }
-            match line_contents {
-                LineContent::LLCacheLineSwap {
-                    new_start,
-                    old_start,
-                    size,
-                    used_bytes,
-                } => {
-                    if let Some(read_index) = reads_with_pending_used_bytes.remove(&old_start) {
-                        // println!("assigning used_bytes {:?} to address read at address {:x}.", used_bytes, old_start);
-                        reads[read_index].used_bytes = used_bytes;
-                    }
-                    if line_index < to_line {
-                        let next_read_index = reads.len();
-                        reads_with_pending_used_bytes.insert(new_start, next_read_index);
-                        reads_with_pending_stacks.push(next_read_index);
-                        reads.push(CacheLineRead {
-                            line_index,
-                            address: new_start,
-                            size,
-                            used_bytes: None,
-                            stack: None,
-                        });
-                    } else if reads_with_pending_used_bytes.is_empty() {
-                        break;
-                    }
-                }
-                LineContent::StackForLLMiss(stack) => {
-                    for read_index in reads_with_pending_stacks.drain(..) {
-                        reads[read_index].stack = Some(stack);
-                    }
-                }
-                _ => {}
-            }
-        };
+        }
     }
+
+    let reads = reads_info.into_reads();
 
     // println!("reads: {:?}", reads);
 
@@ -578,7 +703,10 @@ impl StackInfoCollector {
                 println!("AddStack: {:?}", line_content);
                 if self.last_stack == 0 || index != 0 {
                     if index == 0 {
-                        println!("adding stack with index 0, last_stack is {}", self.last_stack);
+                        println!(
+                            "adding stack with index 0, last_stack is {}",
+                            self.last_stack
+                        );
                     }
                     self.stack_table.add_stack(index, parent_stack, frame);
                     self.last_stack = index;
