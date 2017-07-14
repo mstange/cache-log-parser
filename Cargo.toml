@@ -6,6 +6,7 @@ version = "0.1.0"
 [dependencies]
 addr2line = "0.3.0"
 clap = "2.25.0"
+fixed_circular_buffer = "0.2.2"
 hyper = "0.10.5"
 itertools = "0.6.0"
 lazy_static = "0.2.6"

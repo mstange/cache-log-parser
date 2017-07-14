@@ -191,22 +191,13 @@ impl StackTable {
     pub fn symbolicate_all(&mut self) {
         println!("Have {} frames I need to symbolicate.", self.frames.len());
         if let &Some(ref libs) = &self.libs {
-            println!("Have libs.");
             let mut frames_by_lib_index = HashMap::new();
             for (frame, &(address, _)) in self.frames.iter().enumerate() {
                 if let Some(lib) = libs.lib_for_address(address) {
-                    println!(
-                        "assigning address 0x{:x} as 0x{:x} to library {}",
-                        address,
-                        address - lib.start,
-                        lib.debug_path
-                    );
                     frames_by_lib_index
                         .entry(lib)
                         .or_insert_with(|| Vec::new())
                         .push((frame, address - lib.start));
-                } else {
-                    println!("Could not assign address 0x{:x} to any library.", address);
                 }
             }
             for (lib, frames_with_addresses) in frames_by_lib_index.into_iter() {
@@ -221,13 +212,10 @@ impl StackTable {
                 {
                     for (i, frame_info) in symbolicated_addresses.into_iter().enumerate() {
                         let (frame, address) = frames_with_addresses[i];
-                        println!("symbolicated address {} as {:?}", address, frame_info);
                         self.frames[frame].1 = Some(frame_info);
                     }
                 }
             }
-        } else {
-            println!("Don't have libs.");
         }
     }
 
@@ -239,9 +227,10 @@ impl StackTable {
                     let relative_address = address - lib.start;
 
                     if let None = *stack_frame_info {
-                        if let Ok(stack_fragment) =
+                        if let Ok(mut stack_fragment) =
                             get_addr2line_stack(&lib.debug_path, relative_address)
                         {
+                            stack_fragment.reverse();
                             *stack_frame_info = Some(stack_fragment);
                         }
                     }

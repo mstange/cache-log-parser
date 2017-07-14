@@ -66,7 +66,6 @@ pub fn get_addr2line_symbols_no_inline(
     addrs: &Vec<u64>,
 ) -> Result<Vec<StackFrameInfo>, io::Error> {
     let addrs_as_strings: Vec<String> = addrs.iter().map(|addr| format!("0x{:x}", addr)).collect();
-    println!("addr2line --functions --demangle --exe={} {}", lib_path, addrs_as_strings.join(" "));
     let addr2line_output = Command::new("addr2line")
         .args(
             ["--functions", "--demangle", &format!("--exe={}", lib_path)].iter(),
@@ -75,8 +74,6 @@ pub fn get_addr2line_symbols_no_inline(
         .output()?
         .stdout;
     if let IResult::Done(_, result) = parse_addr2line_output(&addr2line_output) {
-        println!("result: {:?}", result);
-        println!("input length: {}, output length: {}", addrs.len(), result.len());
         Ok(result)
     } else {
         Ok(Vec::new())
@@ -92,7 +89,6 @@ pub fn get_addr2line_symbols_with_inline(
         .map(|addr| format!("0x{:x}", addr))
         .intersperse("0".to_owned())
         .collect();
-    println!("addr2line --inlines --functions --demangle --exe={} {}", lib_path, addrs_as_strings.join(" "));
     let addr2line_output = Command::new("addr2line")
         .args(
             [
@@ -107,10 +103,8 @@ pub fn get_addr2line_symbols_with_inline(
         .stdout;
     if let IResult::Done(_, flat_frame_infos) = parse_addr2line_output(&addr2line_output) {
         let mut result = Vec::new();
-        // println!("flat_frame_infos: {:?}", flat_frame_infos);
         let mut iter = flat_frame_infos.into_iter();
         'outer: while let Some(frame_info) = iter.next() {
-            // println!("frame_info: {:?}", frame_info);
             let mut this_address_frames = vec![frame_info];
             while let Some(frame_info) = iter.next() {
                 if frame_info.function_name != "??" {
@@ -125,8 +119,6 @@ pub fn get_addr2line_symbols_with_inline(
             result.push(this_address_frames);
             break;
         }
-        // println!("result: {:?}", result);
-        println!("input length: {}, output length: {}", addrs.len(), result.len());
         Ok(result)
     } else {
         Ok(Vec::new())

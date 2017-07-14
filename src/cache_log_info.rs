@@ -12,6 +12,7 @@ use arenas::Arenas;
 use profile::ProfileBuilder;
 use rand::{self, Rng};
 use pretty_bytes::converter::convert;
+use fixed_circular_buffer::CircularBuffer;
 
 #[derive(Debug)]
 struct PIDs {
@@ -264,7 +265,6 @@ impl ReadsCollector {
                 used_bytes,
             } => {
                 if let Some(read_index) = self.reads_with_pending_used_bytes.remove(&old_start) {
-                    // println!("assigning used_bytes {:?} to address read at address {:x}.", used_bytes, old_start);
                     self.reads[read_index].used_bytes = used_bytes;
                 }
                 if within_interesting_section {
@@ -323,15 +323,10 @@ where
 
     let reads = reads_info.into_reads();
 
-    // println!("reads: {:?}", reads);
-
-    // want to insert roughly 1 sample per 1KB wasted.
-    // for 1 byte wasted, the probability of inserting a sample is 1 / 512.
-
     let bytes_per_ms: u32 = 1024;
     let bytes_per_sample: u32 = 256;
 
-    let stack_table = stack_info.get_stack_table();
+    let mut stack_table = stack_info.get_stack_table();
 
     let mut read_bytes_profile_builder = ProfileBuilder::new(
         stack_table.clone(),
@@ -352,8 +347,11 @@ where
     let mut read_bytes_cumulative = 0;
     let mut used_bytes_cumulative = 0;
     let mut wasted_bytes_cumulative = 0;
+
+    let mut wasted_bytes_cumulative_per_stack = HashMap::new();
+
     for CacheLineRead {
-        line_index: _,
+        line_index,
         address: _,
         size: read_bytes,
         used_bytes,
@@ -362,6 +360,7 @@ where
     {
         if let (Some(used_bytes), Some(stack)) = (used_bytes, stack) {
             let wasted_bytes = read_bytes - used_bytes;
+            *wasted_bytes_cumulative_per_stack.entry(stack).or_insert(0u64) += wasted_bytes as u64;
 
             if rng.next_u32() % bytes_per_sample < read_bytes as u32 {
                 read_bytes_profile_builder.add_sample(
@@ -398,6 +397,12 @@ where
     wasted_bytes_profile_builder
         .save_to_file("/home/mstange/Desktop/wasted_bytes_profile.sps.json")
         .expect("JSON file writing went wrong");
+    let mut wasted_bytes_cumulative_per_stack: Vec<(usize, u64)> = wasted_bytes_cumulative_per_stack.into_iter().collect();
+    wasted_bytes_cumulative_per_stack.sort_by(|&(_, ref wb1), &(_, wb2)| wb2.cmp(wb1));
+    for (stack, wasted_bytes) in wasted_bytes_cumulative_per_stack.into_iter().take(10) {
+        println!("Wasted {} at stack {}.", convert(wasted_bytes as f64), stack);
+        stack_table.print_stack(stack, 4);
+    }
     Ok(())
 }
 
@@ -435,6 +440,41 @@ where
     }
     Ok(())
 }
+
+#[allow(dead_code)]
+pub fn print_surrounding_lines<T>(pid: i32, iter: T, line_index: usize) -> Result<(), io::Error>
+where
+    T: iter::Iterator<Item = (usize, String)>,
+{
+    let mut surrounding_lines = CircularBuffer::from(vec!["".to_owned();25]);
+    let mut found_line = false;
+    let mut remaining_lines = 25usize / 2;
+    for (li, line) in iter {
+        if let Some((p, line_contents)) = parse_line_of_pid(&line) {
+            if p != pid {
+                continue;
+            }
+            surrounding_lines.queue(line.clone());
+            if li >= line_index {
+                remaining_lines -= 1;
+                if remaining_lines == 0 {
+                    break;
+                }
+            }
+        }
+    }
+    println!("surrounding_lines:");
+    for (i, line) in surrounding_lines.iter().enumerate() {
+        if i == 25usize / 2 {
+            println!(" > {}", line);
+        } else {
+            println!("   {}", line);
+        }
+    }
+    Ok(())
+}
+
+
 
 #[allow(dead_code)]
 pub fn print_fork_lines<T>(pid: i32, iter: T) -> Result<(), io::Error>
@@ -673,8 +713,6 @@ impl ArenaInfoCollector {
 struct StackInfoCollector {
     stack_table: StackTable,
     shared_libs_json_string: String,
-    last_frame: usize,
-    last_stack: usize,
 }
 
 impl StackInfoCollector {
@@ -682,35 +720,20 @@ impl StackInfoCollector {
         StackInfoCollector {
             stack_table: StackTable::new(),
             shared_libs_json_string: String::new(),
-            last_frame: 0,
-            last_stack: 0,
         }
     }
 
     pub fn process_line(&mut self, line_content: &LineContent) {
         match line_content {
             &LineContent::AddFrame { index, address } => {
-                if self.last_frame == 0 || index != 0 {
-                    self.stack_table.add_frame(index, address);
-                    self.last_frame = index;
-                }
+                self.stack_table.add_frame(index, address);
             }
             &LineContent::AddStack {
                 index,
                 parent_stack,
                 frame,
             } => {
-                println!("AddStack: {:?}", line_content);
-                if self.last_stack == 0 || index != 0 {
-                    if index == 0 {
-                        println!(
-                            "adding stack with index 0, last_stack is {}",
-                            self.last_stack
-                        );
-                    }
-                    self.stack_table.add_stack(index, parent_stack, frame);
-                    self.last_stack = index;
-                }
+                self.stack_table.add_stack(index, parent_stack, frame);
             }
             &LineContent::SharedLibsChunk(ref json_string_chunk) => {
                 self.shared_libs_json_string.push_str(json_string_chunk);
@@ -723,8 +746,6 @@ impl StackInfoCollector {
         let StackInfoCollector {
             mut stack_table,
             shared_libs_json_string,
-            last_frame: _,
-            last_stack: _,
         } = self;
         if shared_libs_json_string.is_empty() {
             println!("Couldn't find any SharedLibrary information in the log.");

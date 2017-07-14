@@ -59,7 +59,7 @@ Index: cachegrind/cg_sim.c
  /* This attribute forces GCC to inline the function, getting rid of a
   * lot of indirection around the cache_t2 pointer, if it is known to be
   * constant in the caller (the caller is inlined itself).
-@@ -86,37 +125,50 @@
+@@ -86,37 +125,52 @@
   */
  __attribute__((always_inline))
  static __inline__
@@ -92,8 +92,10 @@ Index: cachegrind/cg_sim.c
 +            use_set[j] = use_set[j - 1];
           }
           set[0] = tag;
-+         use_set[0] = use_tag | use_bits;
++         use_set[0] = use_tag;
  
++         use_set[0] |= use_bits;
++
           return False;
        }
     }
@@ -112,7 +114,7 @@ Index: cachegrind/cg_sim.c
  
     return True;
  }
-@@ -140,8 +192,10 @@
+@@ -140,8 +194,10 @@
     UWord tag1   = block1;
  
     /* Access entirely within line. */
@@ -125,7 +127,7 @@ Index: cachegrind/cg_sim.c
  
     /* Access straddles two lines. */
     else if (block1 + 1 == block2) {
-@@ -148,14 +202,18 @@
+@@ -148,14 +204,18 @@
        UInt  set2 = block2 & c->sets_min_1;
        UWord tag2 = block2;
  
@@ -150,7 +152,7 @@ Index: cachegrind/cg_sim.c
                 a, size, block1, block2);
     VG_(tool_panic)("item straddles more than two cache sets");
     /* not reached */
-@@ -162,16 +220,14 @@
+@@ -162,16 +222,14 @@
     return True;
  }
  
@@ -170,49 +172,65 @@ Index: cachegrind/cg_sim.c
  }
  
  __attribute__((always_inline))
-@@ -180,8 +236,10 @@
+@@ -178,11 +236,13 @@
+ static __inline__
+ void cachesim_I1_doref_Gen(Addr a, UChar size, ULong* m1, ULong *mL)
  {
-    if (cachesim_ref_is_miss(&I1, a, size)) {
-       (*m1)++;
+-   if (cachesim_ref_is_miss(&I1, a, size)) {
+-      (*m1)++;
 -      if (cachesim_ref_is_miss(&LL, a, size))
++   // if (cachesim_ref_is_miss(&I1, a, size)) {
++   //    (*m1)++;
 +      if (cachesim_ref_is_miss(&LL, a, size)) {
           (*mL)++;
+-   }
 +         llMiss(a, size, "I1_Gen");
 +      }
-    }
++   // }
  }
  
-@@ -194,12 +252,15 @@
+ // common special case IrNoX
+@@ -194,13 +254,16 @@
     UInt  I1_set = block & I1.sets_min_1;
  
     // use block as tag
 -   if (cachesim_setref_is_miss(&I1, I1_set, block)) {
-+   if (cachesim_setref_is_miss(&I1, I1_set, block, 0)) {
-       UInt  LL_set = block & LL.sets_min_1;
-       (*m1)++;
-       // can use block as tag as L1I and LL cache line sizes are equal
--      if (cachesim_setref_is_miss(&LL, LL_set, block))
++   // if (cachesim_setref_is_miss(&I1, I1_set, block, 0)) {
++   //    (*m1)++;
++      // can use block as tag as L1I and LL cache line sizes are equal
 +      ULong use_bits = (UINT64_MAX >> (64 - size)) << (a % 64);
+       UInt  LL_set = block & LL.sets_min_1;
+-      (*m1)++;
+-      // can use block as tag as L1I and LL cache line sizes are equal
+-      if (cachesim_setref_is_miss(&LL, LL_set, block))
 +      if (cachesim_setref_is_miss(&LL, LL_set, block, use_bits)) {
           (*mL)++;
+-   }
 +         llMiss(a, size, "I1_NoX");
 +      }
-    }
++   // }
  }
  
-@@ -209,8 +270,10 @@
+ __attribute__((always_inline))
+@@ -207,11 +270,13 @@
+ static __inline__
+ void cachesim_D1_doref(Addr a, UChar size, ULong* m1, ULong *mL)
  {
-    if (cachesim_ref_is_miss(&D1, a, size)) {
-       (*m1)++;
+-   if (cachesim_ref_is_miss(&D1, a, size)) {
+-      (*m1)++;
 -      if (cachesim_ref_is_miss(&LL, a, size))
++   // if (cachesim_ref_is_miss(&D1, a, size)) {
++   //    (*m1)++;
 +      if (cachesim_ref_is_miss(&LL, a, size)) {
           (*mL)++;
+-   }
 +         llMiss(a, size, "D1");
 +      }
-    }
++   // }
  }
  
-@@ -237,3 +300,117 @@
+ /* Check for special case IrNoX. Called at instrumentation time.
+@@ -237,3 +302,117 @@
  /*--- end                                                 cg_sim.c ---*/
  /*--------------------------------------------------------------------*/
  

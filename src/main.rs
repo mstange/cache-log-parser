@@ -15,6 +15,7 @@ extern crate clap;
 extern crate rand;
 extern crate itertools;
 extern crate pretty_bytes;
+extern crate fixed_circular_buffer;
 
 mod cache_log_parsing;
 mod shared_libraries;
@@ -30,7 +31,7 @@ use std::io::{BufRead, BufReader};
 use std::fs::File;
 use cache_log_info::{print_display_list_info, print_other_lines, print_process_info,
                      print_extra_field_info, print_multiple_read_ranges, print_cache_line_wastage,
-                     print_fork_lines};
+                     print_fork_lines, print_surrounding_lines};
 
 fn main() {
     let matches = clap::App::new("cache-log-parser")
@@ -52,14 +53,15 @@ fn main() {
     );
     let result = 
     // print_process_info(iter);
-    print_display_list_info(21479, iter);
+    // print_display_list_info(31480, iter);
     // print_cache_contents_at(iter, 67317106)?;
     // print_cache_contents_at(iter, cache, 58256278)?;
     // print_extra_field_info(iter).expect("someting wong");
     // print_other_lines(iter);
-    // print_fork_lines(21479, iter);
+    // print_fork_lines(31480, iter);
     // print_cache_read_overhead(iter, 67317106, 67500260)?;
     // print_multiple_read_ranges(iter, 112906438, 113242142);
-    // print_cache_line_wastage(21479, iter, 173745068, 174325285);
+    print_cache_line_wastage(31480, iter, 132184857, 132777404);
+    // print_surrounding_lines(31480, iter, 174117724);
     println!("result: {:?}", result);
 }

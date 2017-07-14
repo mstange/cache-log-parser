@@ -77,7 +77,8 @@ impl ProfileBuilder {
         let string_table: Vec<Value> = stack_table
             .frames
             .iter()
-            .map(|&(address, ref frame_info_vec)| {
+            .enumerate()
+            .map(|(_, &(address, ref frame_info_vec))| {
                 if let &Some(ref frame_info_vec) = frame_info_vec {
                     if !frame_info_vec.is_empty() {
                         let &StackFrameInfo {
