@@ -407,26 +407,6 @@ where
 }
 
 #[allow(dead_code)]
-pub fn print_extra_field_info<T>(iter: T) -> Result<(), io::Error>
-where
-    T: iter::Iterator<Item = (usize, String)>,
-{
-    for (_, line) in iter {
-        if let Some((_, line_contents)) = parse_line_of_pid(&line) {
-            if let LineContent::ExtraField {
-                ident,
-                field_name,
-                field_content,
-            } = line_contents
-            {
-                println!("{} {} {}", ident, field_name, field_content);
-            }
-        };
-    }
-    Ok(())
-}
-
-#[allow(dead_code)]
 pub fn print_other_lines<T>(iter: T) -> Result<(), io::Error>
 where
     T: iter::Iterator<Item = (usize, String)>,
@@ -470,55 +450,6 @@ where
         } else {
             println!("   {}", line);
         }
-    }
-    Ok(())
-}
-
-
-
-#[allow(dead_code)]
-pub fn print_fork_lines<T>(pid: i32, iter: T) -> Result<(), io::Error>
-where
-    T: iter::Iterator<Item = (usize, String)>,
-{
-    let mut last_frame_index = -1;
-    let mut last_stack_index = -1;
-    for (line_index, line) in iter {
-        if let Some((p, line_contents)) = parse_line_of_pid(&line) {
-            if p != pid {
-                continue;
-            }
-            if let LineContent::AddFrame {
-                index: frame_index,
-                address: _,
-            } = line_contents
-            {
-                if frame_index as i32 <= last_frame_index {
-                    println!(
-                        "something forked at or before line {} (last frame index: {}, new frame index: {})",
-                        line_index,
-                        last_frame_index,
-                        frame_index
-                    )
-                }
-                last_frame_index = frame_index as i32;
-            } else if let LineContent::AddStack {
-                       index: stack_index,
-                       parent_stack: _,
-                       frame: _,
-                   } = line_contents
-            {
-                if stack_index as i32 <= last_stack_index {
-                    println!(
-                        "something forked at or before line {} (last stack index: {}, new stack index: {})",
-                        line_index,
-                        last_stack_index,
-                        stack_index
-                    )
-                }
-                last_stack_index = stack_index as i32;
-            }
-        };
     }
     Ok(())
 }
