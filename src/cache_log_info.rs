@@ -123,7 +123,10 @@ impl DisplayListBuildingSection {
             ranges_read.add(address, size as u64);
         }
 
-        println!("  - DisplayList section which read {}", convert(bytes_read as f64));
+        println!(
+            "  - DisplayList section which read {}",
+            convert(bytes_read as f64)
+        );
         if let Some(end_line_index) = self.end_line_index {
             println!(
                 "      - frome line {} to line {} ({} lines total)",
@@ -360,7 +363,9 @@ where
     {
         if let (Some(used_bytes), Some(stack)) = (used_bytes, stack) {
             let wasted_bytes = read_bytes - used_bytes;
-            *wasted_bytes_cumulative_per_stack.entry(stack).or_insert(0u64) += wasted_bytes as u64;
+            *wasted_bytes_cumulative_per_stack.entry(stack).or_insert(
+                0u64,
+            ) += wasted_bytes as u64;
 
             if rng.next_u32() % bytes_per_sample < read_bytes as u32 {
                 read_bytes_profile_builder.add_sample(
@@ -397,10 +402,15 @@ where
     wasted_bytes_profile_builder
         .save_to_file("/home/mstange/Desktop/wasted_bytes_profile.sps.json")
         .expect("JSON file writing went wrong");
-    let mut wasted_bytes_cumulative_per_stack: Vec<(usize, u64)> = wasted_bytes_cumulative_per_stack.into_iter().collect();
+    let mut wasted_bytes_cumulative_per_stack: Vec<(usize, u64)> =
+        wasted_bytes_cumulative_per_stack.into_iter().collect();
     wasted_bytes_cumulative_per_stack.sort_by(|&(_, ref wb1), &(_, wb2)| wb2.cmp(wb1));
     for (stack, wasted_bytes) in wasted_bytes_cumulative_per_stack.into_iter().take(10) {
-        println!("Wasted {} at stack {}.", convert(wasted_bytes as f64), stack);
+        println!(
+            "Wasted {} at stack {}.",
+            convert(wasted_bytes as f64),
+            stack
+        );
         stack_table.print_stack(stack, 4);
     }
     Ok(())
@@ -426,11 +436,10 @@ pub fn print_surrounding_lines<T>(pid: i32, iter: T, line_index: usize) -> Resul
 where
     T: iter::Iterator<Item = (usize, String)>,
 {
-    let mut surrounding_lines = CircularBuffer::from(vec!["".to_owned();25]);
-    let mut found_line = false;
+    let mut surrounding_lines = CircularBuffer::from(vec!["".to_owned(); 25]);
     let mut remaining_lines = 25usize / 2;
     for (li, line) in iter {
-        if let Some((p, line_contents)) = parse_line_of_pid(&line) {
+        if let Some((p, _)) = parse_line_of_pid(&line) {
             if p != pid {
                 continue;
             }
@@ -454,44 +463,64 @@ where
     Ok(())
 }
 
-#[allow(dead_code)]
-pub fn print_cache_contents_at<T>(mut iter: T, at_line_index: usize) -> Result<(), io::Error>
+fn find_cpucache_info<T>(pid: i32, iter: &mut T) -> Option<CPUCache>
 where
     T: iter::Iterator<Item = (usize, String)>,
 {
-    let mut cache = loop {
+    loop {
         if let Some((_, line)) = iter.next() {
-            if let Some((_,
-                         LineContent::LLCacheInfo {
-                             size,
-                             line_size,
-                             assoc,
-                         })) = parse_line_of_pid(&line)
-            {
-                break CPUCache::new(size, line_size, assoc);
+            if let Some((p, ref line_contents)) = parse_line_of_pid(&line) {
+                if p != pid {
+                    continue;
+                }
+                if let &LineContent::LLCacheInfo {
+                    size,
+                    line_size,
+                    assoc,
+                } = line_contents
+                {
+                    return Some(CPUCache::new(size, line_size, assoc));
+                }
             }
         } else {
             println!("Couldn't find CPU cache info, not simulating cache.");
-            return Ok(());
+            return None;
         }
-    };
-    for (line_index, line) in iter {
-        if line_index >= at_line_index {
-            break;
-        }
-        if let Some((_, line_contents)) = parse_line_of_pid(&line) {
-            if let LineContent::LLCacheLineSwap {
-                new_start,
-                old_start,
-                size: _,
-                used_bytes: _,
-            } = line_contents
-            {
-                cache.exchange(new_start, old_start);
-            }
-        };
     }
-    println!("cache ranges: {:?}", cache.get_cached_ranges());
+
+}
+
+#[allow(dead_code)]
+pub fn print_cache_contents_at<T>(
+    pid: i32,
+    mut iter: T,
+    at_line_index: usize,
+) -> Result<(), io::Error>
+where
+    T: iter::Iterator<Item = (usize, String)>,
+{
+    if let Some(mut cache) = find_cpucache_info(pid, &mut iter) {
+        for (line_index, line) in iter {
+            if line_index >= at_line_index {
+                break;
+            }
+            if let Some((p, line_contents)) = parse_line_of_pid(&line) {
+                if p != pid {
+                    continue;
+                }
+                if let LineContent::LLCacheLineSwap {
+                    new_start,
+                    old_start,
+                    size: _,
+                    used_bytes: _,
+                } = line_contents
+                {
+                    cache.exchange(new_start, old_start);
+                }
+            };
+        }
+        println!("cache ranges: {:?}", cache.get_cached_ranges());
+    }
     Ok(())
 }
 
@@ -839,6 +868,7 @@ impl ArenaAddressReads {
 
 #[allow(dead_code)]
 pub fn print_multiple_read_ranges<T>(
+    pid: i32,
     iter: T,
     from_line: usize,
     to_line: usize,
@@ -858,7 +888,10 @@ where
 
     for (line_index, line) in iter.take(to_line) {
 
-        if let Some((_, line_contents)) = parse_line_of_pid(&line) {
+        if let Some((p, line_contents)) = parse_line_of_pid(&line) {
+            if p != pid {
+                continue;
+            }
             stack_info.process_line(&line_contents);
             arena_info.process_line(&line_contents);
             if line_index >= from_line {
