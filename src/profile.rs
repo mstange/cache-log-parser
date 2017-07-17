@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use stack_table::{StackTable, StackEntry};
-use addr2line_cmd::{StackFrameInfo, get_addr2line_symbols_no_inline};
-use serde_json::{Value, Number, to_writer};
+use addr2line_cmd::{StackFrameInfo};
+use serde_json::{Value, to_writer};
 use std::io;
 use std::fs::File;
 

@@ -407,26 +407,6 @@ where
 }
 
 #[allow(dead_code)]
-pub fn print_extra_field_info<T>(iter: T) -> Result<(), io::Error>
-where
-    T: iter::Iterator<Item = (usize, String)>,
-{
-    for (_, line) in iter {
-        if let Some((_, line_contents)) = parse_line_of_pid(&line) {
-            if let LineContent::ExtraField {
-                ident,
-                field_name,
-                field_content,
-            } = line_contents
-            {
-                println!("{} {} {}", ident, field_name, field_content);
-            }
-        };
-    }
-    Ok(())
-}
-
-#[allow(dead_code)]
 pub fn print_other_lines<T>(iter: T) -> Result<(), io::Error>
 where
     T: iter::Iterator<Item = (usize, String)>,
@@ -474,55 +454,6 @@ where
     Ok(())
 }
 
-
-
-#[allow(dead_code)]
-pub fn print_fork_lines<T>(pid: i32, iter: T) -> Result<(), io::Error>
-where
-    T: iter::Iterator<Item = (usize, String)>,
-{
-    let mut last_frame_index = -1;
-    let mut last_stack_index = -1;
-    for (line_index, line) in iter {
-        if let Some((p, line_contents)) = parse_line_of_pid(&line) {
-            if p != pid {
-                continue;
-            }
-            if let LineContent::AddFrame {
-                index: frame_index,
-                address: _,
-            } = line_contents
-            {
-                if frame_index as i32 <= last_frame_index {
-                    println!(
-                        "something forked at or before line {} (last frame index: {}, new frame index: {})",
-                        line_index,
-                        last_frame_index,
-                        frame_index
-                    )
-                }
-                last_frame_index = frame_index as i32;
-            } else if let LineContent::AddStack {
-                       index: stack_index,
-                       parent_stack: _,
-                       frame: _,
-                   } = line_contents
-            {
-                if stack_index as i32 <= last_stack_index {
-                    println!(
-                        "something forked at or before line {} (last stack index: {}, new stack index: {})",
-                        line_index,
-                        last_stack_index,
-                        stack_index
-                    )
-                }
-                last_stack_index = stack_index as i32;
-            }
-        };
-    }
-    Ok(())
-}
-
 #[allow(dead_code)]
 pub fn print_cache_contents_at<T>(mut iter: T, at_line_index: usize) -> Result<(), io::Error>
 where
@@ -561,42 +492,6 @@ where
         };
     }
     println!("cache ranges: {:?}", cache.get_cached_ranges());
-    Ok(())
-}
-
-#[allow(dead_code)]
-pub fn print_cache_read_overhead<T>(
-    iter: T,
-    from_line: usize,
-    to_line: usize,
-) -> Result<(), io::Error>
-where
-    T: iter::Iterator<Item = (usize, String)>,
-{
-    let mut bytes_read = 0;
-    let mut ranges_read = Ranges::new();
-    for (_, line) in iter.take(to_line).skip(from_line) {
-        if let Some((_, line_contents)) = parse_line_of_pid(&line) {
-            if let LineContent::LLCacheLineSwap {
-                new_start,
-                old_start: _,
-                size,
-                used_bytes: _,
-            } = line_contents
-            {
-                bytes_read = bytes_read + size;
-                ranges_read.add(new_start, size as u64);
-            }
-        };
-    }
-    let ranges_read_size = ranges_read.cumulative_size();
-    let overhead = bytes_read as f64 / ranges_read_size as f64;
-    println!(
-        "bytes_read: {}, cumulative size of ranges_read: {}, overhead: {}",
-        bytes_read,
-        ranges_read_size,
-        overhead
-    );
     Ok(())
 }
 
