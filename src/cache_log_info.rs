@@ -1,8 +1,6 @@
-use std::io;
 use std::iter;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Display;
-use std::mem;
 use cache_log_parsing::{parse_line_of_pid, LineContent};
 use ranges::Ranges;
 use cpucache::CPUCache;
@@ -32,7 +30,7 @@ impl PIDs {
 }
 
 #[allow(dead_code)]
-pub fn print_process_info<T>(iter: T) -> Result<(), io::Error>
+pub fn print_process_info<T>(iter: T)
 where
     T: iter::Iterator<Item = (usize, String)>,
 {
@@ -70,7 +68,6 @@ where
     } else {
         println!("Did not find any processes in the log.");
     }
-    Ok(())
 }
 
 struct DisplayListBuildingSection {
@@ -124,7 +121,7 @@ impl DisplayListBuildingSection {
         }
 
         println!(
-            "  - DisplayList section which read {}",
+            "  - DisplayList section which contains {} of reads",
             convert(bytes_read as f64)
         );
         if let Some(end_line_index) = self.end_line_index {
@@ -169,7 +166,7 @@ impl DisplayListBuildingSection {
 }
 
 #[allow(dead_code)]
-pub fn print_display_list_info<T>(pid: i32, iter: T) -> Result<(), io::Error>
+pub fn print_display_list_info<T>(pid: i32, iter: T)
 where
     T: iter::Iterator<Item = (usize, String)>,
 {
@@ -219,7 +216,6 @@ where
             section.print_info();
         }
     }
-    Ok(())
 }
 
 #[derive(Debug)]
@@ -302,7 +298,7 @@ pub fn print_cache_line_wastage<T>(
     iter: T,
     from_line: usize,
     to_line: usize,
-) -> Result<(), io::Error>
+)
 where
     T: iter::Iterator<Item = (usize, String)>,
 {
@@ -354,7 +350,7 @@ where
     let mut wasted_bytes_cumulative_per_stack = HashMap::new();
 
     for CacheLineRead {
-        line_index,
+        line_index: _,
         address: _,
         size: read_bytes,
         used_bytes,
@@ -413,11 +409,10 @@ where
         );
         stack_table.print_stack(stack, 4);
     }
-    Ok(())
 }
 
 #[allow(dead_code)]
-pub fn print_other_lines<T>(iter: T) -> Result<(), io::Error>
+pub fn print_other_lines<T>(iter: T)
 where
     T: iter::Iterator<Item = (usize, String)>,
 {
@@ -428,16 +423,15 @@ where
             }
         }
     }
-    Ok(())
 }
 
 #[allow(dead_code)]
-pub fn print_surrounding_lines<T>(pid: i32, iter: T, line_index: usize) -> Result<(), io::Error>
+pub fn print_surrounding_lines<T>(pid: i32, iter: T, line_index: usize, context: usize)
 where
     T: iter::Iterator<Item = (usize, String)>,
 {
-    let mut surrounding_lines = CircularBuffer::from(vec!["".to_owned(); 25]);
-    let mut remaining_lines = 25usize / 2;
+    let mut surrounding_lines = CircularBuffer::from(vec!["".to_owned(); context + 1 + context]);
+    let mut remaining_lines = context + 1;
     for (li, line) in iter {
         if let Some((p, _)) = parse_line_of_pid(&line) {
             if p != pid {
@@ -454,13 +448,12 @@ where
     }
     println!("surrounding_lines:");
     for (i, line) in surrounding_lines.iter().enumerate() {
-        if i == 25usize / 2 {
+        if i == context {
             println!(" > {}", line);
         } else {
             println!("   {}", line);
         }
     }
-    Ok(())
 }
 
 fn find_cpucache_info<T>(pid: i32, iter: &mut T) -> Option<CPUCache>
@@ -495,7 +488,7 @@ pub fn print_cache_contents_at<T>(
     pid: i32,
     mut iter: T,
     at_line_index: usize,
-) -> Result<(), io::Error>
+)
 where
     T: iter::Iterator<Item = (usize, String)>,
 {
@@ -521,7 +514,6 @@ where
         }
         println!("cache ranges: {:?}", cache.get_cached_ranges());
     }
-    Ok(())
 }
 
 fn n_times(n: usize, singular: &str, plural: &str) -> String {
@@ -559,14 +551,12 @@ fn type_from_ident(ident: &str) -> &str {
 
 struct ArenaInfoCollector {
     arenas: Arenas,
-    bytes_read: HashMap<String, u64>,
 }
 
 impl ArenaInfoCollector {
     pub fn new() -> ArenaInfoCollector {
         ArenaInfoCollector {
             arenas: Arenas::new(),
-            bytes_read: HashMap::new(),
         }
     }
 
@@ -872,7 +862,7 @@ pub fn print_multiple_read_ranges<T>(
     iter: T,
     from_line: usize,
     to_line: usize,
-) -> Result<(), io::Error>
+)
 where
     T: iter::Iterator<Item = (usize, String)>,
 {
@@ -1022,6 +1012,4 @@ where
         println!("");
         println!("");
     }
-
-    Ok(())
 }

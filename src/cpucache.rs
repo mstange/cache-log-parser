@@ -34,39 +34,6 @@ impl CPUCache {
         }
     }
 
-    pub fn load(&mut self, addr: u64) -> Option<u64> {
-        let tag = addr >> self.line_size_bits;
-        let set_no = tag & self.sets_min_1;
-        let tag_index_start = (set_no * self.assoc) as usize;
-        let tag_index_end = ((set_no + 1) * self.assoc) as usize;
-        let set = &mut self.tags[tag_index_start..tag_index_end];
-        if tag == set[0] {
-            return None;
-        }
-        for i in 1..(self.assoc as usize) {
-            if tag == set[i] {
-                let mut j = i;
-                while j > 0 {
-                    set[j] = set[j - 1];
-                    j = j - 1;
-                }
-                set[0] = tag;
-
-                return None;
-            }
-        }
-
-        let mut j = (self.assoc - 1) as usize;
-        let evicting = set[j] << self.line_size_bits;
-        while j > 0 {
-            set[j] = set[j - 1];
-            j = j - 1;
-        }
-        set[0] = tag;
-
-        Some(evicting)
-    }
-
     pub fn exchange(&mut self, new_addr: u64, old_addr: u64) {
         let old_tag = old_addr >> self.line_size_bits;
         let new_tag = new_addr >> self.line_size_bits;

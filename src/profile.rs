@@ -62,7 +62,7 @@ impl ProfileBuilder {
         let samples_data: Vec<Value> = self.samples
             .iter()
             .enumerate()
-            .map(|(i, &(stack, time))| {
+            .map(|(_, &(stack, time))| {
                 json!(
                     [
                         non_inline_to_inline_stack[*old_stack_to_new_stack.get(&stack).expect(

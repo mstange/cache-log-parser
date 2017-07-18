@@ -65,6 +65,7 @@ impl Arena {
         self.isa.associate_with(thing_type, thing_ident);
     }
 
+    #[allow(dead_code)]
     pub fn set_property(&mut self, property: &str, value: &str) {
         self.isa.set_property(property, value);
     }
@@ -155,6 +156,7 @@ impl Arenas {
             .description(&|thing_ident| self.get_thing_already_exists(thing_ident))
     }
 
+    #[allow(dead_code)]
     pub fn arena_ranges<'a>(&'a self, ident: &str) -> Option<&'a Ranges> {
         self.arenas.get(ident).map(|arena| arena.ranges())
     }

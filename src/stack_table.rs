@@ -1,4 +1,3 @@
-use std::mem;
 use std::collections::{HashMap, HashSet};
 use addr2line_cmd::{get_addr2line_stack, get_addr2line_symbols_with_inline, StackFrameInfo};
 use shared_libraries::SharedLibraries;
@@ -211,7 +210,7 @@ impl StackTable {
                     )
                 {
                     for (i, frame_info) in symbolicated_addresses.into_iter().enumerate() {
-                        let (frame, address) = frames_with_addresses[i];
+                        let (frame, _) = frames_with_addresses[i];
                         self.frames[frame].1 = Some(frame_info);
                     }
                 }

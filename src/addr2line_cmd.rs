@@ -61,25 +61,6 @@ pub fn get_addr2line_stack(lib_path: &str, addr: u64) -> Result<Vec<StackFrameIn
     }
 }
 
-pub fn get_addr2line_symbols_no_inline(
-    lib_path: &str,
-    addrs: &Vec<u64>,
-) -> Result<Vec<StackFrameInfo>, io::Error> {
-    let addrs_as_strings: Vec<String> = addrs.iter().map(|addr| format!("0x{:x}", addr)).collect();
-    let addr2line_output = Command::new("addr2line")
-        .args(
-            ["--functions", "--demangle", &format!("--exe={}", lib_path)].iter(),
-        )
-        .args(&addrs_as_strings)
-        .output()?
-        .stdout;
-    if let IResult::Done(_, result) = parse_addr2line_output(&addr2line_output) {
-        Ok(result)
-    } else {
-        Ok(Vec::new())
-    }
-}
-
 pub fn get_addr2line_symbols_with_inline(
     lib_path: &str,
     addrs: &Vec<u64>,

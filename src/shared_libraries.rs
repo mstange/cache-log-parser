@@ -21,10 +21,6 @@ pub struct SharedLibraries {
 }
 
 impl SharedLibraries {
-    pub fn new() -> SharedLibraries {
-        SharedLibraries { l: Vec::new() }
-    }
-
     pub fn from_json_string(json_string: String) -> serde_json::Result<SharedLibraries> {
         Ok(SharedLibraries { l: serde_json::from_str(&json_string)? })
     }
