@@ -368,7 +368,11 @@ If you want to use this tool to get your own profiles, here's how to do it:
  3. Apply `gecko.diff` to your mozilla-central clone and compile it with the following mozconfig options:
 
     ```
-    TBD
+    ac_add_options --enable-optimize="-g -O2"
+    ac_add_options --disable-debug
+    ac_add_options --enable-debug-symbols
+    ac_add_options --enable-valgrind
+    ac_add_options --disable-jemalloc
     ```
  4. Make sure you have a good testcase for the problem you want to investigate.
  5. Run your patched cachegrind with your patched Firefox and pipe the stderr output to a file:
