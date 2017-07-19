@@ -1,3 +1,38 @@
+# HG changeset patch
+# User Markus Stange <mstange@themasta.com>
+# Date 1498851919 14400
+#      Fri Jun 30 15:45:19 2017 -0400
+# Node ID f2af3c999254f123fc0ecea8bad4ace1a20ac1c2
+# Parent  57b57379c60c6b938881f80cd58a62479358465a
+Add logging about arena memory ranges, and about shared libraries..
+
+diff --git a/layout/base/PresShell.cpp b/layout/base/PresShell.cpp
+--- a/layout/base/PresShell.cpp
++++ b/layout/base/PresShell.cpp
+@@ -866,6 +866,8 @@ PresShell::PresShell()
+ 
+   mScrollPositionClampingScrollPortSizeSet = false;
+ 
++  log_memory_info("[PresShell:%p] has [nsPresArena:%p]\n", this, &mFrameArena);
++
+   static bool addedSynthMouseMove = false;
+   if (!addedSynthMouseMove) {
+     Preferences::AddBoolVarCache(&sSynthMouseMove,
+@@ -948,6 +950,14 @@ PresShell::Init(nsIDocument* aDocument,
+   mDocument = aDocument;
+   mViewManager = aViewManager;
+ 
++  nsIURI* uri = mDocument->GetDocumentURI();
++  nsIDocument* contentRoot = GetPrimaryContentDocument();
++  if (contentRoot) {
++    uri = contentRoot->GetDocumentURI();
++  }
++  nsCString uriString = uri ? uri->GetSpecOrDefault() : NS_LITERAL_CSTRING("N/A");
++  log_memory_info("[PresShell:%p] has URL %s\n", this, uriString.get());
++
+   // mDocument is now set.  It might have a display document whose "need layout/
+   // style" flush flags are not set, but ours will be set.  To keep these
+   // consistent, call the flag setting functions to propagate those flags up
 diff --git a/layout/base/nsLayoutUtils.cpp b/layout/base/nsLayoutUtils.cpp
 --- a/layout/base/nsLayoutUtils.cpp
 +++ b/layout/base/nsLayoutUtils.cpp
@@ -17,75 +52,34 @@ diff --git a/layout/base/nsLayoutUtils.cpp b/layout/base/nsLayoutUtils.cpp
    Telemetry::AccumulateTimeDelta(Telemetry::PAINT_BUILD_DISPLAYLIST_TIME,
                                   startBuildDisplayList);
  
+diff --git a/layout/base/nsPresArena.cpp b/layout/base/nsPresArena.cpp
+--- a/layout/base/nsPresArena.cpp
++++ b/layout/base/nsPresArena.cpp
+@@ -23,6 +23,7 @@ using namespace mozilla;
+ 
+ nsPresArena::nsPresArena()
+ {
++  log_memory_info("[nsPresArena:%p] has [ArenaAllocator:%p]\n", this, &mPool);
+ }
+ 
+ nsPresArena::~nsPresArena()
 diff --git a/layout/painting/nsDisplayList.cpp b/layout/painting/nsDisplayList.cpp
 --- a/layout/painting/nsDisplayList.cpp
 +++ b/layout/painting/nsDisplayList.cpp
-@@ -1369,7 +1369,9 @@ nsDisplayListBuilder::AllocateDisplayIte
+@@ -936,8 +936,13 @@ nsDisplayListBuilder::nsDisplayListBuild
  {
-   void* p = Allocate(sizeof(DisplayItemClipChain));
-   DisplayItemClipChain* c = new (KnownNotNull, p) DisplayItemClipChain{ aClip, aASR, aParent };
--  mClipChainsToDestroy.AppendElement(c);
-+  if (aClip.GetRoundedRectCount() != 0) {
-+    mClipChainsToDestroy.AppendElement(c);
-+  }
-   return c;
- }
+   MOZ_COUNT_CTOR(nsDisplayListBuilder);
  
-@@ -1894,8 +1896,10 @@ nsDisplayList::GetBounds(nsDisplayListBu
- 
- nsRect
- nsDisplayList::GetClippedBoundsWithRespectToASR(nsDisplayListBuilder* aBuilder,
--                                                const ActiveScrolledRoot* aASR) const {
-+                                                const ActiveScrolledRoot* aASR,
-+                                                nsRect* aOutVisibleRectUnion) const {
-   nsRect bounds;
-+  nsRect visibleRectUnion;
-   for (nsDisplayItem* i = GetBottom(); i != nullptr; i = i->GetAbove()) {
-     nsRect r = i->GetClippedBounds(aBuilder);
-     if (aASR != i->GetActiveScrolledRoot() && !r.IsEmpty()) {
-@@ -1911,6 +1915,10 @@ nsDisplayList::GetClippedBoundsWithRespe
-       }
-     }
-     bounds.UnionRect(bounds, r);
-+    visibleRectUnion.UnionRect(visibleRectUnion, i->GetVisibleRect());
-+  }
-+  if (aOutVisibleRectUnion) {
-+    *aOutVisibleRectUnion = visibleRectUnion;
-   }
-   return bounds;
- }
-diff --git a/layout/painting/nsDisplayList.h b/layout/painting/nsDisplayList.h
---- a/layout/painting/nsDisplayList.h
-+++ b/layout/painting/nsDisplayList.h
-@@ -2480,7 +2480,8 @@ public:
-    * then this method trigger an assertion failure.
-    */
-   nsRect GetClippedBoundsWithRespectToASR(nsDisplayListBuilder* aBuilder,
--                                          const ActiveScrolledRoot* aASR) const;
-+                                          const ActiveScrolledRoot* aASR,
-+                                          nsRect* aOutVisibleRectUnion = nullptr) const;
- 
-   /**
-    * Find the topmost display item that returns a non-null frame, and return
-@@ -3765,7 +3766,8 @@ public:
-    */
-   virtual void UpdateBounds(nsDisplayListBuilder* aBuilder) override
-   {
--    mBounds = mList.GetClippedBoundsWithRespectToASR(aBuilder, mActiveScrolledRoot);
-+    nsRect visibleRectUnion;
-+    mBounds = mList.GetClippedBoundsWithRespectToASR(aBuilder, mActiveScrolledRoot, &visibleRectUnion);
-     // The display list may contain content that's visible outside the visible
-     // rect (i.e. the current dirty rect) passed in when the item was created.
-     // This happens when the dirty rect has been restricted to the visual
-@@ -3773,7 +3775,7 @@ public:
-     // rects in nsDisplayListBuilder::MarkOutOfFlowFrameForDisplay), but that
-     // frame contains placeholders for out-of-flows that aren't descendants of
-     // the frame.
--    mVisibleRect.UnionRect(mBaseVisibleRect, mList.GetVisibleRect());
-+    mVisibleRect.UnionRect(mBaseVisibleRect, visibleRectUnion);
-   }
-   virtual void HitTest(nsDisplayListBuilder* aBuilder, const nsRect& aRect,
-                        HitTestState* aState, nsTArray<nsIFrame*> *aOutFrames) override;
++  log_memory_info("[nsDisplayListBuilder:%p] has [ArenaAllocator:%p]\n", this, &mPool);
++
+   nsPresContext* pc = aReferenceFrame->PresContext();
+   nsIPresShell *shell = pc->PresShell();
++  nsIURI* uri = shell->GetDocument()->GetDocumentURI();
++  nsCString uriString = uri ? uri->GetSpecOrDefault() : NS_LITERAL_CSTRING("N/A");
++  log_memory_info("[nsDisplayListBuilder:%p] has url %s\n", this, uriString.get());
+   if (pc->IsRenderingOnlySelection()) {
+     nsCOMPtr<nsISelectionController> selcon(do_QueryInterface(shell));
+     if (selcon) {
 diff --git a/tools/profiler/core/platform.cpp b/tools/profiler/core/platform.cpp
 --- a/tools/profiler/core/platform.cpp
 +++ b/tools/profiler/core/platform.cpp
@@ -97,43 +91,33 @@ diff --git a/tools/profiler/core/platform.cpp b/tools/profiler/core/platform.cpp
  #include <fstream>
  #include <sstream>
  #include <errno.h>
-@@ -111,19 +112,28 @@
- #include "mozilla/Sprintf.h"
- #include "mozilla/ArenaAllocator.h"
+@@ -104,6 +105,25 @@
+ #include <ucontext.h>
+ #endif
  
--static FILE* arena_debug_log;
-+// static FILE* arena_debug_log;
- 
- void MOZ_FORMAT_PRINTF(1, 2) print_arena_debug(const char* str, ...)
- {
--  if (!arena_debug_log) {
--    char buf[1024];
--    SprintfLiteral(buf, "/Users/mstange/Desktop/arena_debug_%d.log", getpid());
--    arena_debug_log = fopen(buf, "w");
--  }
-+  // if (!arena_debug_log) {
-+  //   char buf[1024];
-+  //   SprintfLiteral(buf, "/Users/mstange/Desktop/arena_debug_%d.log", getpid());
-+  //   arena_debug_log = fopen(buf, "w");
-+  // }
 +
-+  // va_list pl;
-+  // va_start(pl, str);
-+  // vfprintf(stderr, str, pl);
-+  // va_end(pl);
++#include <sys/types.h>
++#include <unistd.h>
 +
++#include "mozilla/Sprintf.h"
++#include "mozilla/ArenaAllocator.h"
++
++void MOZ_FORMAT_PRINTF(1, 2) log_memory_info(const char* str, ...)
++{
++  // Print the line to stderr, prefixed by our process ID.
 +  char buf[1024];
-   va_list pl;
-   va_start(pl, str);
--  vfprintf(arena_debug_log, str, pl);
++  va_list pl;
++  va_start(pl, str);
 +  VsprintfLiteral(buf, str, pl);
-   va_end(pl);
++  va_end(pl);
 +
 +  fprintf(stderr, "==%d== %s", int(getpid()), buf);
- }
- 
++}
++
  using namespace mozilla;
-@@ -1362,7 +1372,7 @@ SafeJSInteger(uint64_t aValue) {
+ 
+ LazyLogModule gProfilerLog("prof");
+@@ -1340,7 +1360,7 @@ SafeJSInteger(uint64_t aValue) {
  static void
  AddSharedLibraryInfoToStream(JSONWriter& aWriter, const SharedLibrary& aLib)
  {
@@ -142,7 +126,7 @@ diff --git a/tools/profiler/core/platform.cpp b/tools/profiler/core/platform.cpp
    aWriter.IntProperty("start", SafeJSInteger(aLib.GetStart()));
    aWriter.IntProperty("end", SafeJSInteger(aLib.GetEnd()));
    aWriter.IntProperty("offset", SafeJSInteger(aLib.GetOffset()));
-@@ -2183,6 +2193,16 @@ profiler_init(void* aStackTop)
+@@ -2161,6 +2181,16 @@ profiler_init(void* aStackTop)
      // startup, even if no profiling is actually to be done. So, instead, it is
      // created on demand at the first call to PlatformStart().
  
@@ -153,9 +137,37 @@ diff --git a/tools/profiler/core/platform.cpp b/tools/profiler/core/platform.cpp
 +    w.EndArray();
 +    std::string sharedLibsString = sharedLibs.str();
 +    for (size_t pos = 0; pos < sharedLibsString.length(); pos += 512) {
-+      print_arena_debug("SharedLibsChunk: %s\n", sharedLibsString.substr(pos, 512).c_str());
++      log_memory_info("SharedLibsChunk: %s\n", sharedLibsString.substr(pos, 512).c_str());
 +    }
 +
      if (!getenv("MOZ_PROFILER_STARTUP")) {
        return;
      }
+diff --git a/xpcom/ds/ArenaAllocator.h b/xpcom/ds/ArenaAllocator.h
+--- a/xpcom/ds/ArenaAllocator.h
++++ b/xpcom/ds/ArenaAllocator.h
+@@ -18,6 +18,8 @@
+ #include "mozilla/TemplateLib.h"
+ #include "nsDebug.h"
+ 
++extern void log_memory_info(const char* str, ...) MOZ_FORMAT_PRINTF(1, 2);
++
+ namespace mozilla {
+ 
+ /**
+@@ -95,6 +97,7 @@ public:
+     while (a) {
+       auto tmp = a;
+       a = a->next;
++      log_memory_info("[ArenaAllocator:%p] Deallocating arena chunk at %p with size %zu bytes\n", this, tmp, tmp->header.tail - reinterpret_cast<uintptr_t>(tmp));
+       free(tmp);
+     }
+ 
+@@ -181,6 +184,7 @@ private:
+       return nullptr;
+     }
+ 
++    log_memory_info("[ArenaAllocator:%p] Allocating arena chunk at %p with size %zu bytes\n", this, p, chunkSize);
+     ArenaChunk* arena = new (KnownNotNull, p) ArenaChunk(chunkSize);
+     MOZ_MAKE_MEM_NOACCESS((void*)arena->header.offset,
+                           arena->header.tail - arena->header.offset);
