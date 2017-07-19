@@ -121,7 +121,7 @@ impl DisplayListBuildingSection {
         }
 
         println!(
-            "  - DisplayList section which contains {} of reads",
+            "  - DisplayList section which contains {} of memory reads",
             convert(bytes_read as f64)
         );
         if let Some(end_line_index) = self.end_line_index {
@@ -293,12 +293,7 @@ impl ReadsCollector {
 }
 
 #[allow(dead_code)]
-pub fn print_cache_line_wastage<T>(
-    pid: i32,
-    iter: T,
-    from_line: usize,
-    to_line: usize,
-)
+pub fn print_cache_line_wastage<T>(pid: i32, iter: T, from_line: usize, to_line: usize)
 where
     T: iter::Iterator<Item = (usize, String)>,
 {
@@ -416,10 +411,10 @@ pub fn print_other_lines<T>(iter: T)
 where
     T: iter::Iterator<Item = (usize, String)>,
 {
-    for (line_index, line) in iter {
+    for (_, line) in iter {
         if let Some((_, line_contents)) = parse_line_of_pid(&line) {
-            if let LineContent::Other(s) = line_contents {
-                println!("{}: {}", line_index, s);
+            if let LineContent::Other(_) = line_contents {
+                println!("{}", line);
             }
         }
     }
@@ -447,7 +442,10 @@ where
         }
     }
     println!("surrounding_lines:");
-    for (i, line) in surrounding_lines.iter().enumerate() {
+    let mut surrounding_lines: Vec<(usize, &String)> =
+        surrounding_lines.iter().enumerate().collect();
+    surrounding_lines.reverse();
+    for (i, line) in surrounding_lines.into_iter() {
         if i == context {
             println!(" > {}", line);
         } else {
@@ -484,11 +482,7 @@ where
 }
 
 #[allow(dead_code)]
-pub fn print_cache_contents_at<T>(
-    pid: i32,
-    mut iter: T,
-    at_line_index: usize,
-)
+pub fn print_cache_contents_at<T>(pid: i32, mut iter: T, at_line_index: usize)
 where
     T: iter::Iterator<Item = (usize, String)>,
 {
@@ -555,9 +549,7 @@ struct ArenaInfoCollector {
 
 impl ArenaInfoCollector {
     pub fn new() -> ArenaInfoCollector {
-        ArenaInfoCollector {
-            arenas: Arenas::new(),
-        }
+        ArenaInfoCollector { arenas: Arenas::new() }
     }
 
     pub fn process_line(&mut self, line_content: &LineContent) {
@@ -857,12 +849,7 @@ impl ArenaAddressReads {
 }
 
 #[allow(dead_code)]
-pub fn print_multiple_read_ranges<T>(
-    pid: i32,
-    iter: T,
-    from_line: usize,
-    to_line: usize,
-)
+pub fn print_multiple_read_ranges<T>(pid: i32, iter: T, from_line: usize, to_line: usize)
 where
     T: iter::Iterator<Item = (usize, String)>,
 {
