@@ -258,7 +258,6 @@ The Gecko instrumentations outputs the following information:
     ==8884== SharedLibsChunk: 4.so.2", "breakpadId": "45F3AF02EE9C99199D01899D1325F03D0", "arch": ""}, {"start": 67272704, "end": 67293577, "offset": 0, "name": "libplc4.so", "path": "/home/mstange/code/mozilla/obj-x86_64-pc-linux-gnu/dist/bin/libplc4.so", "debugName": "libplc4.so", "debugPath": "/home/mstange/code/mozilla/obj-x86_64-pc-linux-gnu/dist/bin/libplc4.so", "breakpadId": "83EA728AFBECEFFF883A4D776AAB27250", "arch": ""}, {"start": 67297280, "end": 67313945, "offset": 0, "name": "libplds4.so", "path": "/home/mstange/code/mozill
     [...]
     ==8884== SharedLibsChunk: 4-linux-gnu/gconv/UTF-16.so", "debugName": "UTF-16.so", "debugPath": "/usr/lib/x86_64-linux-gnu/gconv/UTF-16.so", "breakpadId": "D52C8118785A060855AB2FBE69B113E10", "arch": ""}]
-
 	```
 
 The cachegrind instrumentation outputs the following information:
@@ -360,11 +359,11 @@ If you want to use this tool to get your own profiles, here's how to do it:
 
     ```
     svn co svn://svn.valgrind.org/valgrind/trunk
-  cd trunk
-  (apply the patch)
-  ./autogen.sh
-  ./configure --prefix=`pwd`/Inst
-  make -j8 && make -j8 install
+    cd trunk
+    (apply the patch)
+    ./autogen.sh
+    ./configure --prefix=`pwd`/Inst
+    make -j8 && make -j8 install
     ```
  3. Apply `gecko.diff` to your mozilla-central clone and compile it with the following mozconfig options:
 
