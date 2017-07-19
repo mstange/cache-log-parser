@@ -306,21 +306,21 @@ The cachegrind instrumentation outputs the following information:
 
 Cachegrind's cache simulation is extremely simple and very easy to play with. All the code that's needed is contained [in the file cg_sim.c](https://github.com/svn2github/valgrind/blob/master/cachegrind/cg_sim.c).
 
-Let's say your stack has these settings:
+Let's say your cache has these settings:
 
  - Total size: 2MB (= 2097152 bytes)
  - Cache line size: 64 bytes (this seems to be genenally true for x86 CPUs)
- - Associativity: 16
+ - Associativity: 8
 
 This cache can accomodate 2MB / 64B = 32768 cache lines.
 
 For each of these cache lines, all we need to know is which address in memory is currently stored in that part of the cache. So we have an array of 32768 "tags", where each tag is a number that is computed as \<memory address> / 64.
 
-The array of tags forms a 2D table which has 16 columns and 32768 / 16 = 2048 rows. The number of columns (here 16) is the cache associativity, and each row is called a "set".
+The array of tags forms a 2D table which has 8 columns and 32768 / 8 = 4096 rows. The number of columns (here 8) is the cache associativity, and each row is called a "set".
 
-Repeating the above: Our cache consists of 2048 sets, and each set contains 16 cache lines. 2048 * 16 * 64B = 2MB. For each cache line we save a tag which describes the memory address that is stored in that cache line.
+Repeating the above: Our cache consists of 4096 sets, and each set contains 8 cache lines. 4096 * 8 * 64B = 2MB. For each cache line we save a tag which describes the memory address that is stored in that cache line.
 
-A given memory address can only be cached in one set; the address determines the set number that it can be cached in. The set number is computed like this: (\<memory address> / 64) % 2048. For example, the memory at address 0x20000 (131072) can only be cached in set 0, and the memory at address 0x20040 (131136, i.e. 64 bytes to the right of 131072) can only be cached in set 1.
+A given memory address can only be cached in one set; the address determines the set number that it can be cached in. The set number is computed like this: (\<memory address> / 64) % 4096. For example, the memory at address 0x40000 (262144) can only be cached in set 0, and the memory at address 0x40040 (262208, i.e. 64 bytes to the right of 262144) can only be cached in set 1.
 
 When a given memory address is accessed, the cache simulation does the following:
 
