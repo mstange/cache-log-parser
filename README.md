@@ -348,7 +348,7 @@ This means that we need to parse the whole log from the beginning even if we are
 
 Symbolication is done by the log parsing tool. It maps a given stack frame address to the containing library, using the library table from the Gecko instrumentation, and then runs the command line tool `addr2line` in order to get the symbol name for the address.
 
-It uses `addr2line --inline-frames`, so the resulting profiles contain stack frames even for functions that were inlined into other functions.
+It uses `addr2line --inlines`, so the resulting profiles contain stack frames even for functions that were inlined into other functions.
 
 ## How to run it
 
