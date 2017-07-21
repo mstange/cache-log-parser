@@ -2,8 +2,8 @@
 # User Markus Stange <mstange@themasta.com>
 # Date 1498851919 14400
 #      Fri Jun 30 15:45:19 2017 -0400
-# Node ID f2af3c999254f123fc0ecea8bad4ace1a20ac1c2
-# Parent  57b57379c60c6b938881f80cd58a62479358465a
+# Node ID 21255b5afbd9d89eaeb3dd2172d467933fb1c03f
+# Parent  7d2e89fb92331d7e4296391213c1e63db628e046
 Add logging about arena memory ranges, and about shared libraries..
 
 diff --git a/layout/base/PresShell.cpp b/layout/base/PresShell.cpp
@@ -36,19 +36,19 @@ diff --git a/layout/base/PresShell.cpp b/layout/base/PresShell.cpp
 diff --git a/layout/base/nsLayoutUtils.cpp b/layout/base/nsLayoutUtils.cpp
 --- a/layout/base/nsLayoutUtils.cpp
 +++ b/layout/base/nsLayoutUtils.cpp
-@@ -3474,6 +3474,7 @@ nsLayoutUtils::PaintFrame(gfxContext* aR
+@@ -3482,6 +3482,7 @@ nsLayoutUtils::PaintFrame(gfxContext* aR
    }
  
    TimeStamp startBuildDisplayList = TimeStamp::Now();
-+  print_arena_debug("Begin DisplayList building\n");
++  log_memory_info("Begin DisplayList building\n");
    nsDisplayListBuilder builder(aFrame, aBuilderMode,
                                 !(aFlags & PaintFrameFlags::PAINT_HIDE_CARET));
    if (aFlags & PaintFrameFlags::PAINT_IN_TRANSFORM) {
-@@ -3632,6 +3633,7 @@ nsLayoutUtils::PaintFrame(gfxContext* aR
+@@ -3640,6 +3641,7 @@ nsLayoutUtils::PaintFrame(gfxContext* aR
      }
    }
  
-+  print_arena_debug("End DisplayList building\n");
++  log_memory_info("End DisplayList building\n");
    Telemetry::AccumulateTimeDelta(Telemetry::PAINT_BUILD_DISPLAYLIST_TIME,
                                   startBuildDisplayList);
  
@@ -117,7 +117,7 @@ diff --git a/tools/profiler/core/platform.cpp b/tools/profiler/core/platform.cpp
  using namespace mozilla;
  
  LazyLogModule gProfilerLog("prof");
-@@ -1340,7 +1360,7 @@ SafeJSInteger(uint64_t aValue) {
+@@ -1301,7 +1321,7 @@ SafeJSInteger(uint64_t aValue) {
  static void
  AddSharedLibraryInfoToStream(JSONWriter& aWriter, const SharedLibrary& aLib)
  {
@@ -126,7 +126,7 @@ diff --git a/tools/profiler/core/platform.cpp b/tools/profiler/core/platform.cpp
    aWriter.IntProperty("start", SafeJSInteger(aLib.GetStart()));
    aWriter.IntProperty("end", SafeJSInteger(aLib.GetEnd()));
    aWriter.IntProperty("offset", SafeJSInteger(aLib.GetOffset()));
-@@ -2161,6 +2181,16 @@ profiler_init(void* aStackTop)
+@@ -2124,6 +2144,16 @@ profiler_init(void* aStackTop)
      // startup, even if no profiling is actually to be done. So, instead, it is
      // created on demand at the first call to PlatformStart().
  
