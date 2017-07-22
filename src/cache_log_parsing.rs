@@ -222,7 +222,7 @@ named!(parse_other<&str, LineContent>, do_parse!(
 ));
 
 named!(parse_line<&str, LineContent>, alt!(
-    
+    parse_llcache_info |
     parse_llcache_line_swap | parse_llmiss | parse_stack_for_llmiss |
     parse_llcache_line_swap_with_used_bytes |
     parse_begin_display_list |  parse_end_display_list |
