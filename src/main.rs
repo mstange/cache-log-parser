@@ -31,7 +31,7 @@ use std::io::{BufRead, BufReader};
 use std::fs::File;
 use cache_log_info::{print_display_list_info, print_other_lines, print_process_info,
                      print_multiple_read_ranges, print_cache_line_wastage,
-                     print_surrounding_lines};
+                     print_surrounding_lines, print_wastage_source_code};
 
 fn get_line_iter(filename: &str) -> Box<Iterator<Item = (usize, String)>> {
     let reader = BufReader::new(File::open(filename).unwrap());
@@ -62,6 +62,13 @@ fn main() {
                         <INPUT>              'The input file to use'"))
         .subcommand(clap::SubCommand::with_name("generate-profiles")
                     .about("Generates read_bytes, used_bytes, and wasted_bytes profiles for the given range for the given process.")
+                    .args_from_usage(
+                        "-p, --pid=<PID>     'The pid of the process that should be analyzed'
+                        -s, --start=<START>  'The line number at which to start analyzing'
+                        -e, --end=<END>      'The line number at which to stop analyzing'
+                        <INPUT>              'The input file to use'"))
+        .subcommand(clap::SubCommand::with_name("print-wastage-source-code")
+                    .about("Prints the source code that's responsible for the most wasted bytes for the given range for the given process.")
                     .args_from_usage(
                         "-p, --pid=<PID>     'The pid of the process that should be analyzed'
                         -s, --start=<START>  'The line number at which to start analyzing'
@@ -115,6 +122,15 @@ fn main() {
         let end_line_index: usize = end_line_index.parse().expect("end line number needs to be an unsigned integer");
         let iter = get_line_iter(matches.value_of("INPUT").unwrap());
         print_cache_line_wastage(pid, iter, start_line_index, end_line_index);
+    } else if let Some(matches) = matches.subcommand_matches("print-wastage-source-code") {
+        let pid = matches.value_of("pid").unwrap();
+        let pid: i32 = pid.parse().expect("pid needs to be an integer");
+        let start_line_index = matches.value_of("start").unwrap();
+        let start_line_index: usize = start_line_index.parse().expect("start line number needs to be an unsigned integer");
+        let end_line_index = matches.value_of("end").unwrap();
+        let end_line_index: usize = end_line_index.parse().expect("end line number needs to be an unsigned integer");
+        let iter = get_line_iter(matches.value_of("INPUT").unwrap());
+        print_wastage_source_code(pid, iter, start_line_index, end_line_index);
     } else if let Some(matches) = matches.subcommand_matches("analyze-double-reads") {
         let pid = matches.value_of("pid").unwrap();
         let pid: i32 = pid.parse().expect("pid needs to be an integer");

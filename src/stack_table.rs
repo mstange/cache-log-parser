@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use addr2line_cmd::{get_addr2line_stack, get_addr2line_symbols_with_inline, StackFrameInfo};
 use shared_libraries::SharedLibraries;
+use std::iter;
 
 #[derive(Clone)]
 pub struct StackEntry {
@@ -187,11 +188,12 @@ impl StackTable {
         result
     }
 
-    pub fn symbolicate_all(&mut self) {
-        println!("Have {} frames I need to symbolicate.", self.frames.len());
+    pub fn symbolicate_frames<T>(&mut self, frames: T)
+        where T: iter::Iterator<Item = usize> {
         if let &Some(ref libs) = &self.libs {
             let mut frames_by_lib_index = HashMap::new();
-            for (frame, &(address, _)) in self.frames.iter().enumerate() {
+            for frame in frames {
+                let (address, _) = self.frames[frame];
                 if let Some(lib) = libs.lib_for_address(address) {
                     frames_by_lib_index
                         .entry(lib)
@@ -216,6 +218,13 @@ impl StackTable {
                 }
             }
         }
+
+    }
+
+    pub fn symbolicate_all(&mut self) {
+        println!("Have {} frames I need to symbolicate.", self.frames.len());
+        let frame_count = self.frames.len();
+        self.symbolicate_frames(0..frame_count);
     }
 
     pub fn print_stack(&mut self, stack: usize, indent: usize) {

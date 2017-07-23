@@ -11,6 +11,10 @@ use profile::ProfileBuilder;
 use rand::{self, Rng};
 use pretty_bytes::converter::convert;
 use fixed_circular_buffer::CircularBuffer;
+use addr2line_cmd::StackFrameInfo;
+use std::path::Path;
+use std::io::{self, BufRead, BufReader};
+use std::fs::File;
 
 #[derive(Debug)]
 struct PIDs {
@@ -318,7 +322,7 @@ where
     let reads = reads_info.into_reads();
 
     let bytes_per_ms: u32 = 1024;
-    let bytes_per_sample: u32 = 256;
+    let bytes_per_sample: u32 = 64;
 
     let mut stack_table = stack_info.get_stack_table();
 
@@ -407,6 +411,114 @@ where
 }
 
 #[allow(dead_code)]
+pub fn print_wastage_source_code<T>(pid: i32, iter: T, from_line: usize, to_line: usize)
+where
+    T: iter::Iterator<Item = (usize, String)>,
+{
+    let mut stack_info = StackInfoCollector::new();
+    let mut reads_info = ReadsCollector::new();
+    for (line_index, line) in iter {
+        if let Some((p, line_contents)) = parse_line_of_pid(&line) {
+            if p != pid {
+                continue;
+            }
+            if line_index < to_line {
+                stack_info.process_line(&line_contents);
+            } else if !reads_info.needs_more_lines() {
+                break;
+            }
+            if line_index >= from_line {
+                reads_info.process_line(line_index, line_index < to_line, &line_contents);
+            }
+        }
+    }
+
+    let reads = reads_info.into_reads();
+
+    let mut stack_table = stack_info.get_stack_table();
+
+    let mut wasted_bytes_for_frame: HashMap<usize, u64> = HashMap::new();
+    let mut wasted_bytes_total: u64 = 0;
+
+    for CacheLineRead {
+        line_index: _,
+        address: _,
+        size: read_bytes,
+        used_bytes,
+        stack,
+    } in reads.into_iter()
+    {
+        if let (Some(used_bytes), Some(stack)) = (used_bytes, stack) {
+            let wasted_bytes = read_bytes - used_bytes;
+            let frame = stack_table.stacks[stack].frame;
+            *wasted_bytes_for_frame.entry(frame).or_insert(0) += wasted_bytes as u64;
+            wasted_bytes_total += wasted_bytes as u64;
+        }
+    }
+
+    stack_table.symbolicate_frames(wasted_bytes_for_frame.keys().map(|k| *k));
+
+    let mut wasted_bytes_for_stack_frame_info: HashMap<StackFrameInfo, u64> = HashMap::new();
+    for (frame, wasted_bytes) in wasted_bytes_for_frame {
+        if let &(_, Some(ref stack_frame_infos)) = &stack_table.frames[frame] {
+            if let Some(leaf_stack_frame_info) = stack_frame_infos.last() {
+                *wasted_bytes_for_stack_frame_info
+                    .entry(leaf_stack_frame_info.clone())
+                    .or_insert(0) += wasted_bytes;
+            }
+        }
+    }
+
+    let mut wasted_bytes_for_stack_frame_info: Vec<(StackFrameInfo, u64)> =
+        wasted_bytes_for_stack_frame_info.into_iter().collect();
+    wasted_bytes_for_stack_frame_info.sort_by(|&(_, ref wb1), &(_, wb2)| wb2.cmp(wb1));
+
+    let wasted_bytes_by_top25 = wasted_bytes_for_stack_frame_info.iter().take(25).fold(
+        0,
+        |accum, &(_, wasted_bytes)| accum + wasted_bytes,
+    );
+
+    println!(
+        "Of the total wastage of {}, {} ({:.0}%) were wasted by the top 25 code lines.",
+        convert(wasted_bytes_total as f64),
+        convert(wasted_bytes_by_top25 as f64),
+        (wasted_bytes_by_top25 as f64 / wasted_bytes_total as f64) * 100f64
+    );
+    println!("");
+
+    for (StackFrameInfo {
+             function_name,
+             file_path_str,
+             line_number,
+         },
+         wasted_bytes) in wasted_bytes_for_stack_frame_info.into_iter().take(25)
+    {
+        let path = Path::new(&file_path_str);
+        let file_name = path
+            .file_name()
+            .and_then(|osstr| osstr.to_str())
+            .map(|s| s.to_owned())
+            .unwrap_or(file_path_str.clone());
+        println!(
+            "{} of wastage at {} ({}:{}):",
+            convert(wasted_bytes as f64),
+            function_name,
+            file_name,
+            line_number
+        );
+        if line_number == 0 {
+            println!(" [Line number is zero, which probably indicates an error.]");
+        } else {
+            let result = print_file_context(&path, line_number - 1, 8);
+            if let Err(_) = result {
+                println!(" [Reading file {} failed.]", file_name);
+            }
+        }
+        println!("");
+    }
+}
+
+#[allow(dead_code)]
 pub fn print_other_lines<T>(iter: T)
 where
     T: iter::Iterator<Item = (usize, String)>,
@@ -418,6 +530,24 @@ where
             }
         }
     }
+}
+
+#[allow(dead_code)]
+pub fn print_file_context(path: &Path, line_index: usize, context: usize) -> Result<(), io::Error>
+{
+    let reader = BufReader::new(File::open(path)?);
+    let from_line = if line_index > context { line_index - context } else { 0 };
+    let to_line = line_index + context;
+    for (i, line) in reader.lines().enumerate().skip(from_line).take(to_line - from_line) {
+        if let Ok(line) = line {
+            if i == line_index {
+                println!(" > {}", line);
+            } else {
+                println!("   {}", line);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[allow(dead_code)]
